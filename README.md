@@ -35,7 +35,7 @@ Windows сохраняет данные в `%LOCALAPPDATA%\LocalDrop\Received`. 
 
 ## Сборка
 
-Windows: Rust stable, Visual Studio Build Tools с C++ и Windows SDK.
+Windows: Rust stable, Visual Studio Build Tools с C++ и Windows SDK. MSVC release собирается со статическим CRT: отдельный установщик Visual C++ Runtime для запуска EXE не требуется. Системные DLL Windows остаются системными зависимостями.
 
 ```powershell
 cargo test --workspace --locked
