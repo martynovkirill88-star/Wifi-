@@ -22,6 +22,9 @@ subtle = "2"
 if-addrs = "0.13"
 
 [target.'cfg(windows)'.dependencies]
-native-windows-gui = { version = "1.0.13", features = ["image-decoder"] }
-qrcode = "0.14"
-image = { version = "0.25", default-features = false, features = ["png"] }
+native-windows-gui = { version = "1.0.13", default-features = false, features = ["notice", "combobox", "textbox", "clipboard", "file-dialog", "tray-notification", "image-decoder"] }
+qrcode = { version = "0.14", default-features = false }
+png = "0.18"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

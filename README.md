@@ -58,6 +58,6 @@ cp -R build/DerivedData/Build/Products/Release-iphoneos/LocalDrop.app build/pack
 
 ## Проверка на устройствах и измерения
 
-Сценарии и инструкция измерения CPU/RAM: [docs/VALIDATION.md](docs/VALIDATION.md). До успешных сборок и проверки на настоящем iPhone это исходная реализация, а не подтверждённый готовый продукт. Нельзя считать кроссплатформенную проверку Rust достаточной проверкой поведения Photos, TLS и ограничений iOS.
+Сценарии и инструкция измерения CPU/RAM: [docs/VALIDATION.md](docs/VALIDATION.md). Автоматические Windows- и iOS-сборки настроены и проверяются в [GitHub Actions](https://github.com/martynovkirill88-star/Wifi-/actions). Rust-тесты проверяют авторизацию, подтверждение сопряжения, целостность, обрыв, отмену, конфликты и очистку временных файлов. Проверка на настоящем iPhone, подпись/установка, Live Activity и измерения ресурсов остаются отдельными обязательными этапами. Нельзя считать успешную сборку достаточной проверкой поведения Photos, TLS и ограничений iOS.
 
 Проверенные ссылки API: [Apple: оригиналы и доступ к сети](https://developer.apple.com/documentation/photos/phassetresourcerequestoptions/isnetworkaccessallowed), [Apple: download task пишет во временный файл](https://developer.apple.com/documentation/foundation/urlsessiondownloadtask), [Rust: уведомления UI из потока](https://docs.rs/native-windows-gui/latest/native_windows_gui/struct.NoticeSender.html).

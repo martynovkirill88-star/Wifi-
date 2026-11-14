@@ -66,6 +66,7 @@ import UniformTypeIdentifiers
     }
     private func listen(_ t: Transport) {
         listener?.cancel()
+        let current = generation
         listener = Task { [weak self] in
             guard let self else { return }
             do {
@@ -84,7 +85,7 @@ import UniformTypeIdentifiers
                 }
             } catch {
                 if !Task.isCancelled, transport === t { status = "Приём остановлен: \(error.localizedDescription). Нажмите «Подключить» для повтора."; transport?.close(); transport = nil }
-                busy = false
+                if current == generation { busy = false }
             }
         }
     }
@@ -146,7 +147,7 @@ import UniformTypeIdentifiers
             // Wait for any receive to relinquish the server's single transfer slot.
             await receiver?.value
             guard current == generation else { return }
-            busy = true
+            done = 0; total = 0; busy = true
             do { try await work(t); try Task.checkCancellation(); status = "Отправлено" }
             catch { if current == generation { status = "Отправка остановлена: \(error.localizedDescription)" } }
             if current == generation { busy = false; operation = nil; if background { pause("Отправка завершена. Откройте приложение для продолжения.") } else { listen(t) } }

@@ -109,6 +109,7 @@ impl App {
         (self.ui)("Передачи отменены".into());
     }
     pub fn disconnect(&self) {
+        self.answer(false);
         *self.session.lock().unwrap() = None;
         self.cancel_all();
     }
@@ -346,12 +347,25 @@ async fn upload(
     body: Body,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     auth(&a, &h)?;
-    let _permit = a
-        .transfers
-        .try_acquire()
-        .map_err(|_| (StatusCode::CONFLICT, "Busy".into()))?;
+    let result = receive_upload(a.clone(), q, body).await;
+    if let Err((_, message)) = &result {
+        (a.ui)(format!("Ошибка приёма: {message}"));
+    }
+    result
+}
+async fn receive_upload(
+    a: Arc<App>,
+    q: Upload,
+    body: Body,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let _permit = a.transfers.try_acquire().map_err(|_| {
+        (
+            StatusCode::CONFLICT,
+            "Другая передача ещё выполняется. Повторите отправку.".into(),
+        )
+    })?;
     if q.sha256.len() != 64 || hex::decode(&q.sha256).is_err() || q.name.len() > 1024 {
-        return Err(err("Invalid metadata"));
+        return Err(err("Некорректные сведения о файле"));
     }
     let (part, f) = storage::create_partial(&a.stage).map_err(err)?;
     let mut f = tokio::fs::File::from_std(f);
@@ -361,14 +375,14 @@ async fn upload(
     let mut last = Instant::now();
     let cancel = a.cancel.lock().unwrap().clone();
     loop {
-        let chunk = tokio::select! { _ = cancel.cancelled() => return Err(err("Cancelled")), c = tokio::time::timeout(Duration::from_secs(60), stream.next()) => c.map_err(err)? };
+        let chunk = tokio::select! { _ = cancel.cancelled() => return Err(err("Передача отменена")), c = tokio::time::timeout(Duration::from_secs(60), stream.next()) => c.map_err(|_| err("Нет данных 60 секунд. Соединение прервано."))? };
         let Some(chunk) = chunk else { break };
         let chunk = chunk.map_err(err)?;
         done = done
             .checked_add(chunk.len() as u64)
             .ok_or_else(|| err("Size overflow"))?;
         if done > q.size {
-            return Err(err("Too much data"));
+            return Err(err("Получено больше данных, чем заявлено"));
         }
         f.write_all(&chunk).await.map_err(err)?;
         hash.update(&chunk);
@@ -378,10 +392,19 @@ async fn upload(
         }
     }
     if done != q.size || hex::encode(hash.finalize()) != q.sha256.to_lowercase() {
-        return Err(err("Size or SHA-256 mismatch"));
+        return Err(err(
+            "Размер или SHA-256 не совпал. Незавершённый файл удалён.",
+        ));
+    }
+    if cancel.is_cancelled() {
+        return Err(err("Передача отменена"));
     }
     f.sync_all().await.map_err(err)?;
     drop(f);
+    let _epoch = a.cancel.lock().unwrap();
+    if cancel.is_cancelled() {
+        return Err(err("Передача отменена"));
+    }
     let dest = storage::publish(&part.0, &a.received, &q.name).map_err(err)?;
     (a.ui)(format!(
         "Получено и проверено: {} ({done} байт)",
@@ -407,11 +430,8 @@ async fn text(
     (a.ui)(format!("TEXT:{}", t.text));
     Ok(StatusCode::NO_CONTENT)
 }
-pub async fn serve(a: Arc<App>) -> anyhow::Result<()> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let tls =
-        axum_server::tls_rustls::RustlsConfig::from_pem(a.cert.clone(), a.key.clone()).await?;
-    let router = Router::new()
+fn router(a: Arc<App>) -> Router {
+    Router::new()
         .route("/v1/pair", post(pair))
         .route("/v1/next", get(next))
         .route("/v1/ack/:id", post(ack))
@@ -419,9 +439,212 @@ pub async fn serve(a: Arc<App>) -> anyhow::Result<()> {
         .route("/v1/upload", post(upload))
         .route("/v1/text", post(text))
         .layer(DefaultBodyLimit::max(1024 * 1024 + 4096))
-        .with_state(a);
+        .with_state(a)
+}
+pub async fn serve(a: Arc<App>) -> anyhow::Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let tls =
+        axum_server::tls_rustls::RustlsConfig::from_pem(a.cert.clone(), a.key.clone()).await?;
+    let router = router(a);
     axum_server::bind_rustls(([0, 0, 0, 0], 45831).into(), tls)
         .serve(router.into_make_service())
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::Request;
+    use tower::ServiceExt;
+    struct Fixture {
+        app: Arc<App>,
+        root: PathBuf,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+            let app = App::new(root.clone(), Arc::new(|_| {})).unwrap();
+            *app.session.lock().unwrap() = Some("test-session".into());
+            Self { app, root }
+        }
+        async fn upload(&self, bytes: Vec<u8>, size: usize, hash: String) -> Response {
+            let request = Request::builder()
+                .method("POST")
+                .uri(format!("/v1/upload?name=CON.txt&size={size}&sha256={hash}"))
+                .header("authorization", "Bearer test-session")
+                .body(Body::from(bytes))
+                .unwrap();
+            router(self.app.clone()).oneshot(request).await.unwrap()
+        }
+        fn count(&self, dir: &str) -> usize {
+            std::fs::read_dir(self.root.join(dir)).unwrap().count()
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+    #[tokio::test]
+    async fn unauthenticated_cannot_read_or_write() {
+        let f = Fixture::new();
+        for (method, path) in [
+            ("GET", "/v1/next"),
+            ("POST", "/v1/upload?name=x&size=0&sha256=00"),
+        ] {
+            let r = router(f.app.clone())
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(f.count("Received"), 0);
+        assert_eq!(f.count("Staging"), 0);
+    }
+    #[tokio::test]
+    async fn large_upload_is_verified_and_conflicts_are_preserved() {
+        let f = Fixture::new();
+        let bytes = vec![0xAB; 3 * 1024 * 1024];
+        let hash = hex::encode(Sha256::digest(&bytes));
+        for _ in 0..2 {
+            assert_eq!(
+                f.upload(bytes.clone(), bytes.len(), hash.clone())
+                    .await
+                    .status(),
+                StatusCode::OK
+            );
+        }
+        assert_eq!(f.count("Received"), 2);
+        assert_eq!(f.count("Staging"), 0);
+        for entry in std::fs::read_dir(&f.app.received).unwrap() {
+            let path = entry.unwrap().path();
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+    }
+    #[tokio::test]
+    async fn corrupt_truncated_and_excess_uploads_never_publish() {
+        let f = Fixture::new();
+        let hash = hex::encode(Sha256::digest(b"abc"));
+        for (bytes, size) in [
+            (b"bad".to_vec(), 3),
+            (b"ab".to_vec(), 3),
+            (b"abcd".to_vec(), 3),
+        ] {
+            assert_eq!(
+                f.upload(bytes, size, hash.clone()).await.status(),
+                StatusCode::BAD_REQUEST
+            );
+            assert_eq!(f.count("Received"), 0);
+            assert_eq!(f.count("Staging"), 0);
+        }
+    }
+    #[tokio::test]
+    async fn empty_file_is_valid() {
+        let f = Fixture::new();
+        assert_eq!(
+            f.upload(vec![], 0, hex::encode(Sha256::digest([])))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(f.count("Received"), 1);
+    }
+    #[tokio::test]
+    async fn cancelled_upload_cleans_partial_file() {
+        let f = Fixture::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let first = futures_util::stream::once(async move {
+            let _ = tx.send(());
+            Ok::<_, std::io::Error>(vec![7u8; 65536])
+        });
+        let body = Body::from_stream(first.chain(futures_util::stream::pending()));
+        let a = f.app.clone();
+        let task = tokio::spawn(async move {
+            receive_upload(
+                a,
+                Upload {
+                    name: "cancelled.bin".into(),
+                    size: 131072,
+                    sha256: "0".repeat(64),
+                },
+                body,
+            )
+            .await
+        });
+        rx.await.unwrap();
+        f.app.cancel_all();
+        assert!(task.await.unwrap().is_err());
+        assert_eq!(f.count("Received"), 0);
+        assert_eq!(f.count("Staging"), 0);
+    }
+    #[tokio::test]
+    async fn revocation_prevents_new_requests() {
+        let f = Fixture::new();
+        f.app.disconnect();
+        let r = f.upload(vec![], 0, hex::encode(Sha256::digest([]))).await;
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(f.count("Staging"), 0);
+    }
+    #[tokio::test]
+    async fn snapshot_survives_source_change_and_cancel_cleans_it() {
+        let f = Fixture::new();
+        let source = f.root.join("source.bin");
+        std::fs::write(&source, b"original").unwrap();
+        f.app.clone().queue_file(source.clone()).await.unwrap();
+        std::fs::write(source, b"changed").unwrap();
+        let item = f.app.queue.lock().unwrap().front().cloned().unwrap();
+        assert_eq!(std::fs::read(item.path.unwrap()).unwrap(), b"original");
+        f.app.cancel_all();
+        assert!(f.app.queue.lock().unwrap().is_empty());
+        assert_eq!(f.count("Staging"), 0);
+    }
+    #[tokio::test]
+    async fn pairing_requires_approval_and_rejects_wrong_secret() {
+        let f = Fixture::new();
+        *f.app.session.lock().unwrap() = None;
+        let denied = pair(
+            State(f.app.clone()),
+            Json(Pair {
+                token: "wrong".into(),
+                name: "phone".into(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(denied.0, StatusCode::FORBIDDEN);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let root = f.root.join("pairing");
+        let app = App::new(
+            root,
+            Arc::new(move |m| {
+                let _ = tx.send(m);
+            }),
+        )
+        .unwrap();
+        let task = tokio::spawn({
+            let a = app.clone();
+            async move {
+                pair(
+                    State(a.clone()),
+                    Json(Pair {
+                        token: a.invitation.clone(),
+                        name: "phone".into(),
+                    }),
+                )
+                .await
+            }
+        });
+        rx.recv().await.unwrap();
+        assert!(app.session.lock().unwrap().is_none());
+        app.answer(true);
+        assert!(task.await.unwrap().is_ok());
+        assert!(app.session.lock().unwrap().is_some());
+    }
 }

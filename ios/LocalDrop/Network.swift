@@ -61,14 +61,17 @@ final class Transport: NSObject, URLSessionDelegate, URLSessionTaskDelegate, URL
         if let token { r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         return r
     }
-    func check(_ response: URLResponse) throws -> Int {
+    func check(_ response: URLResponse, data: Data? = nil) throws -> Int {
         guard let r = response as? HTTPURLResponse else { throw TransferError.message("Нет ответа компьютера") }
-        guard (200..<300).contains(r.statusCode) else { throw TransferError.message("Компьютер вернул HTTP \(r.statusCode). Проверьте сопряжение, свободное место и очередь передач.") }
+        guard (200..<300).contains(r.statusCode) else {
+            let detail = data.flatMap { String(data:$0.prefix(2048),encoding:.utf8) } ?? "Проверьте сопряжение, свободное место и очередь передач."
+            throw TransferError.message("Компьютер вернул HTTP \(r.statusCode): \(detail)")
+        }
         return r.statusCode
     }
     func json(_ path: String, object: [String:String]) async throws -> Data {
         var r = try request(path, method: "POST"); r.httpBody = try JSONSerialization.data(withJSONObject: object); r.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let (data,response) = try await session.data(for: r); _ = try check(response); return data
+        let (data,response) = try await session.data(for: r); _ = try check(response,data:data); return data
     }
     func pair() async throws -> String {
         let data = try await json("pair", object: ["token":invitation.token,"name":"iPhone"])
@@ -76,7 +79,7 @@ final class Transport: NSObject, URLSessionDelegate, URLSessionTaskDelegate, URL
         let result = try JSONDecoder().decode(Result.self, from: data); token = result.session; return result.name
     }
     func next() async throws -> Envelope? {
-        let (data,r) = try await session.data(for: request("next")); let status = try check(r)
+        let (data,r) = try await session.data(for: request("next")); let status = try check(r,data:data)
         return status == 204 ? nil : try JSONDecoder().decode(Envelope.self, from: data)
     }
     func ack(_ id: String) async throws { let (_,r) = try await session.data(for: request("ack/" + id, method: "POST")); _ = try check(r) }
@@ -85,7 +88,7 @@ final class Transport: NSObject, URLSessionDelegate, URLSessionTaskDelegate, URL
         try Task.checkCancellation()
         let q = [URLQueryItem(name:"name",value:file.lastPathComponent), URLQueryItem(name:"size",value:String(size)), URLQueryItem(name:"sha256",value:hash)]
         var r = try request("upload", method:"POST", query:q); r.setValue("application/octet-stream",forHTTPHeaderField:"Content-Type")
-        let (_,response) = try await session.upload(for:r, fromFile:file); _ = try check(response)
+        let (data,response) = try await session.upload(for:r, fromFile:file); _ = try check(response,data:data)
     }
     func download(_ e: Envelope, into dir: URL) async throws -> URL {
         guard UUID(uuidString:e.id) != nil, e.sha256.count == 64 else { throw TransferError.message("Некорректное описание файла") }

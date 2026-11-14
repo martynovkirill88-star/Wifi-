@@ -1,4 +1,3 @@
-use image::ImageEncoder;
 use localdrop::server::{App, Item};
 use native_windows_gui as nwg;
 use std::{
@@ -43,20 +42,29 @@ impl Window {
         let json = serde_json::json!({"v":1,"host":host,"port":45831,"fingerprint":app.fingerprint,"token":app.invitation}).to_string();
         self.code.set_text(&json);
         if let Ok(q) = qrcode::QrCode::new(json.as_bytes()) {
-            let image = q
-                .render::<image::Luma<u8>>()
-                .min_dimensions(280, 280)
-                .build();
+            let modules = q.width() + 8;
+            let scale = 300 / modules;
+            let width = modules * scale;
+            let mut pixels = vec![255u8; width * width];
+            for y in 0..q.width() {
+                for x in 0..q.width() {
+                    if q[(x, y)] == qrcode::Color::Dark {
+                        for dy in 0..scale {
+                            for dx in 0..scale {
+                                pixels[((y + 4) * scale + dy) * width + (x + 4) * scale + dx] = 0;
+                            }
+                        }
+                    }
+                }
+            }
             let mut png = Vec::new();
-            if image::codecs::png::PngEncoder::new(&mut png)
-                .write_image(
-                    image.as_raw(),
-                    image.width(),
-                    image.height(),
-                    image::ExtendedColorType::L8,
-                )
-                .is_ok()
-            {
+            let encoded = (|| -> Result<(), png::EncodingError> {
+                let mut encoder = png::Encoder::new(&mut png, width as u32, width as u32);
+                encoder.set_color(png::ColorType::Grayscale);
+                encoder.set_depth(png::BitDepth::Eight);
+                encoder.write_header()?.write_image_data(&pixels)
+            })();
+            if encoded.is_ok() {
                 if let Ok(b) = nwg::Bitmap::from_bin(&png) {
                     self.qr.set_bitmap(Some(&b));
                     *self.bitmap.borrow_mut() = Some(b);
