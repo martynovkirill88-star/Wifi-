@@ -7,6 +7,7 @@ import Photos
     var body: some Scene {
         WindowGroup {
             ContentView(model:model)
+                .onAppear { model.autoConnect() }
                 .onChange(of:phase) { p in model.sceneChanged(p) }
         }
     }
@@ -82,9 +83,7 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented:$photos) { OriginalPicker { ids in photos = false; model.sendAssets(ids) } }
-            .fileImporter(isPresented:$files,allowedContentTypes:[.item],allowsMultipleSelection:true) { result in
-                switch result { case .success(let urls): model.sendFiles(urls); case .failure(let error): model.status = error.localizedDescription }
-            }
+            .sheet(isPresented:$files) { DocumentPicker { urls in files = false; model.sendFiles(urls) } }
         }
     }
 }

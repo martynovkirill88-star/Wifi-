@@ -1,6 +1,24 @@
 import SwiftUI
 import PhotosUI
 import AVFoundation
+import UniformTypeIdentifiers
+
+struct DocumentPicker: UIViewControllerRepresentable {
+    let selected: ([URL]) -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(selected) }
+    func makeUIViewController(context:Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes:[.item],asCopy:true)
+        picker.allowsMultipleSelection = true; picker.delegate = context.coordinator
+        return picker
+    }
+    func updateUIViewController(_ controller:UIDocumentPickerViewController,context:Context) {}
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let selected: ([URL]) -> Void
+        init(_ selected:@escaping ([URL])->Void) { self.selected = selected }
+        func documentPicker(_ controller:UIDocumentPickerViewController,didPickDocumentsAt urls:[URL]) { selected(urls) }
+        func documentPickerWasCancelled(_ controller:UIDocumentPickerViewController) { selected([]) }
+    }
+}
 
 struct OriginalPicker: UIViewControllerRepresentable {
     let selected: ([String]) -> Void

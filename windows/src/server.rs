@@ -25,6 +25,32 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 pub type Ui = Arc<dyn Fn(String) + Send + Sync>;
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Progress {
+    pub direction: String,
+    pub name: String,
+    pub done: u64,
+    pub total: u64,
+    pub index: u32,
+    pub count: u32,
+    pub complete: bool,
+}
+impl Progress {
+    pub fn description(&self) -> String {
+        format!(
+            "{}: {} / {} байт · файл {}/{} · {}",
+            self.direction, self.done, self.total, self.index, self.count, self.name
+        )
+    }
+    fn emit(&self, ui: &Ui) {
+        if let Ok(s) = serde_json::to_string(self) {
+            ui(format!("TRANSFER:{s}"));
+        }
+    }
+}
+fn one() -> u32 {
+    1
+}
 #[derive(Clone, Serialize)]
 pub struct Item {
     pub id: String,
@@ -32,6 +58,8 @@ pub struct Item {
     pub size: u64,
     pub sha256: String,
     pub text: Option<String>,
+    pub index: u32,
+    pub count: u32,
     #[serde(skip)]
     pub path: Option<PathBuf>,
 }
@@ -54,6 +82,7 @@ pub struct App {
     pub cancel: Mutex<CancellationToken>,
     pub transfers: Arc<Semaphore>,
     pub pairing: Semaphore,
+    pub credential_path: Option<PathBuf>,
 }
 type ApiError = (StatusCode, String);
 fn err(e: impl std::fmt::Display) -> ApiError {
@@ -65,9 +94,43 @@ fn secret() -> String {
     hex::encode(b)
 }
 impl App {
+    #[cfg(windows)]
+    pub fn persistent(root: PathBuf, received: PathBuf, ui: Ui) -> anyhow::Result<Arc<Self>> {
+        let path = root.join("trusted-device.dpapi");
+        let saved = crate::credentials::load(&path)?;
+        let mut app = Self::with_received(root, received, ui)?;
+        let a = Arc::get_mut(&mut app).unwrap();
+        if let Some(saved) = saved {
+            a.cert = saved.cert;
+            a.key = saved.key;
+            a.fingerprint = saved.fingerprint;
+            *a.session.lock().unwrap() = saved.session;
+        }
+        a.credential_path = Some(path);
+        a.persist()?;
+        Ok(app)
+    }
+    pub fn persist(&self) -> anyhow::Result<()> {
+        #[cfg(windows)]
+        if let Some(path) = &self.credential_path {
+            crate::credentials::save(
+                path,
+                &crate::credentials::Identity {
+                    cert: self.cert.clone(),
+                    key: self.key.clone(),
+                    fingerprint: self.fingerprint.clone(),
+                    session: self.session.lock().unwrap().clone(),
+                },
+            )?;
+        }
+        Ok(())
+    }
     pub fn new(root: PathBuf, ui: Ui) -> anyhow::Result<Arc<Self>> {
         let received = root.join("Received");
-        let stage = root.join("Staging");
+        Self::with_received(root, received, ui)
+    }
+    pub fn with_received(root: PathBuf, received: PathBuf, ui: Ui) -> anyhow::Result<Arc<Self>> {
+        let stage = received.parent().unwrap_or(&root).join("Staging");
         std::fs::create_dir_all(&received)?;
         std::fs::create_dir_all(&stage)?;
         // Staging is owned by this application. Never promote leftovers after a crash.
@@ -94,6 +157,7 @@ impl App {
             cancel: Mutex::new(CancellationToken::new()),
             transfers: Arc::new(Semaphore::new(1)),
             pairing: Semaphore::new(1),
+            credential_path: None,
         }))
     }
     pub fn cancel_all(&self) {
@@ -111,6 +175,9 @@ impl App {
     pub fn disconnect(&self) {
         self.answer(false);
         *self.session.lock().unwrap() = None;
+        if let Err(e) = self.persist() {
+            (self.ui)(format!("Ошибка сохранения сопряжения: {e}"));
+        }
         self.cancel_all();
     }
     pub fn answer(&self, yes: bool) {
@@ -127,6 +194,14 @@ impl App {
         Ok(())
     }
     pub async fn queue_file(self: Arc<Self>, path: PathBuf) -> anyhow::Result<()> {
+        self.queue_file_batch(path, 1, 1).await
+    }
+    pub async fn queue_file_batch(
+        self: Arc<Self>,
+        path: PathBuf,
+        index: u32,
+        count: u32,
+    ) -> anyhow::Result<()> {
         let cancel = self.cancel.lock().unwrap().clone();
         let (name, size, digest, part) = tokio::task::spawn_blocking({
             let app = self.clone();
@@ -173,6 +248,8 @@ impl App {
             size,
             sha256: digest,
             text: None,
+            index,
+            count,
             path: Some(part.0.clone()),
         };
         self.enqueue(item)?;
@@ -235,6 +312,10 @@ async fn pair(
         .unwrap_or(false);
     a.pending.lock().unwrap().take();
     if !accepted {
+        (a.ui)(
+            "Запрос сопряжения отклонён или истекли 60 секунд. Повторите подключение с iPhone."
+                .into(),
+        );
         return Err((
             StatusCode::FORBIDDEN,
             "Pairing declined or timed out".into(),
@@ -242,6 +323,10 @@ async fn pair(
     }
     let token = secret();
     *a.session.lock().unwrap() = Some(token.clone());
+    if let Err(e) = a.persist() {
+        *a.session.lock().unwrap() = None;
+        return Err(err(format!("Не удалось сохранить сопряжение: {e}")));
+    }
     (a.ui)(format!("Сопряжено: {name}"));
     Ok(Json(
         serde_json::json!({"session": token, "name": "LocalDrop Windows"}),
@@ -271,10 +356,22 @@ async fn ack(
     let mut q = a.queue.lock().unwrap();
     if q.front().is_some_and(|x| x.id == id) {
         if let Some(i) = q.pop_front() {
-            if let Some(p) = i.path {
+            if let Some(p) = &i.path {
                 let _ = std::fs::remove_file(p);
             }
             (a.ui)(format!("Доставлено: {}", i.name));
+            if i.path.is_some() {
+                Progress {
+                    direction: "Отправлено".into(),
+                    name: i.name,
+                    done: i.size,
+                    total: i.size,
+                    index: i.index,
+                    count: i.count,
+                    complete: true,
+                }
+                .emit(&a.ui);
+            }
         }
     }
     Ok(StatusCode::NO_CONTENT)
@@ -293,7 +390,7 @@ async fn download(
         .find(|x| x.id == id)
         .cloned()
         .ok_or((StatusCode::NOT_FOUND, "Unknown transfer".into()))?;
-    let f = tokio::fs::File::open(item.path.ok_or_else(|| err("Not a file"))?)
+    let f = tokio::fs::File::open(item.path.clone().ok_or_else(|| err("Not a file"))?)
         .await
         .map_err(err)?;
     let permit = a
@@ -304,11 +401,22 @@ async fn download(
     let cancel = a.cancel.lock().unwrap().clone();
     let ui = a.ui.clone();
     let total = item.size;
+    let progress = Progress {
+        direction: "Отправка".into(),
+        name: item.name.clone(),
+        done: 0,
+        total,
+        index: item.index,
+        count: item.count,
+        complete: false,
+    };
+    progress.emit(&ui);
     let stream = futures_util::stream::try_unfold(
         (f, permit, 0u64, Instant::now()),
         move |(mut f, permit, mut done, mut last)| {
             let cancel = cancel.clone();
             let ui = ui.clone();
+            let mut progress = progress.clone();
             async move {
                 let mut b = vec![0; 65536];
                 let n = tokio::select! { _ = cancel.cancelled() => return Err(std::io::Error::new(std::io::ErrorKind::Interrupted,"Cancelled")), r = f.read(&mut b) => r? };
@@ -318,7 +426,8 @@ async fn download(
                 b.truncate(n);
                 done += n as u64;
                 if last.elapsed() > Duration::from_millis(250) || done == total {
-                    ui(format!("Отправка: {done} / {total} байт"));
+                    progress.done = done;
+                    progress.emit(&ui);
                     last = Instant::now();
                 }
                 Ok(Some((b, (f, permit, done, last))))
@@ -339,6 +448,10 @@ struct Upload {
     name: String,
     size: u64,
     sha256: String,
+    #[serde(default = "one")]
+    index: u32,
+    #[serde(default = "one")]
+    count: u32,
 }
 async fn upload(
     State(a): State<Arc<App>>,
@@ -374,6 +487,19 @@ async fn receive_upload(
     let mut done = 0u64;
     let mut last = Instant::now();
     let cancel = a.cancel.lock().unwrap().clone();
+    if q.index == 0 || q.count == 0 || q.index > q.count {
+        return Err(err("Некорректное количество файлов"));
+    }
+    let mut progress = Progress {
+        direction: "Приём".into(),
+        name: q.name.clone(),
+        done: 0,
+        total: q.size,
+        index: q.index,
+        count: q.count,
+        complete: false,
+    };
+    progress.emit(&a.ui);
     loop {
         let chunk = tokio::select! { _ = cancel.cancelled() => return Err(err("Передача отменена")), c = tokio::time::timeout(Duration::from_secs(60), stream.next()) => c.map_err(|_| err("Нет данных 60 секунд. Соединение прервано."))? };
         let Some(chunk) = chunk else { break };
@@ -387,7 +513,8 @@ async fn receive_upload(
         f.write_all(&chunk).await.map_err(err)?;
         hash.update(&chunk);
         if last.elapsed() > Duration::from_millis(250) {
-            (a.ui)(format!("Приём: {done} / {} байт", q.size));
+            progress.done = done;
+            progress.emit(&a.ui);
             last = Instant::now();
         }
     }
@@ -406,6 +533,9 @@ async fn receive_upload(
         return Err(err("Передача отменена"));
     }
     let dest = storage::publish(&part.0, &a.received, &q.name).map_err(err)?;
+    progress.done = done;
+    progress.complete = true;
+    progress.emit(&a.ui);
     (a.ui)(format!(
         "Получено и проверено: {} ({done} байт)",
         dest.display()
@@ -432,6 +562,10 @@ async fn text(
 }
 fn router(a: Arc<App>) -> Router {
     Router::new()
+        .route(
+            "/v1/hello",
+            get(|| async { Json(serde_json::json!({"v":1})) }),
+        )
         .route("/v1/pair", post(pair))
         .route("/v1/next", get(next))
         .route("/v1/ack/:id", post(ack))
@@ -485,6 +619,26 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn persistent_pairing_survives_restart_and_can_be_revoked() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let received = root.join("Documents/LocalDrop/Received");
+        let a = App::persistent(root.clone(), received.clone(), Arc::new(|_| {})).unwrap();
+        let fingerprint = a.fingerprint.clone();
+        *a.session.lock().unwrap() = Some("saved-session".into());
+        a.persist().unwrap();
+        drop(a);
+        let b = App::persistent(root.clone(), received.clone(), Arc::new(|_| {})).unwrap();
+        assert_eq!(b.fingerprint, fingerprint);
+        assert_eq!(b.session.lock().unwrap().as_deref(), Some("saved-session"));
+        b.disconnect();
+        drop(b);
+        let c = App::persistent(root.clone(), received, Arc::new(|_| {})).unwrap();
+        assert!(c.session.lock().unwrap().is_none());
+        drop(c);
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[tokio::test]
     async fn unauthenticated_cannot_read_or_write() {
@@ -570,6 +724,8 @@ mod tests {
             receive_upload(
                 a,
                 Upload {
+                    index: 1,
+                    count: 1,
                     name: "cancelled.bin".into(),
                     size: 131072,
                     sha256: "0".repeat(64),

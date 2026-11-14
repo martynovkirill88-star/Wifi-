@@ -29,8 +29,27 @@ import UniformTypeIdentifiers
     private let live = LiveStatus()
     private var background = false
     private var budget: UIBackgroundTaskIdentifier = .invalid
+    private var retry:Task<Void,Never>?
+    private var retryDelay:UInt64 = 3
     let documents = FileManager.default.urls(for:.documentDirectory,in:.userDomainMask)[0]
-    init() { refresh() }
+    init() {
+        refresh()
+        if let saved = PairingStore.load() {
+            invitation = saved.invitation; sessionToken = saved.token; computer = saved.computer
+            code = String(data:(try? JSONEncoder().encode(saved.invitation)) ?? Data(),encoding:.utf8) ?? ""
+            status = "Сохранён компьютер \(computer). Автоматическое подключение…"
+        }
+    }
+    func autoConnect() { if sessionToken != nil, !background { connect() } }
+    private func scheduleReconnect() {
+        guard sessionToken != nil, !background, retry == nil else { return }
+        let delay = retryDelay; retryDelay = min(60,retryDelay*2)
+        retry = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds:delay*1_000_000_000); try Task.checkCancellation() }
+            catch { return }
+            guard let self else { return }; self.retry = nil; self.autoConnect()
+        }
+    }
     private func updateLive() { if busy { live.update(message:status,done:done,total:total) } }
     private func endBudget() { if budget != .invalid { UIApplication.shared.endBackgroundTask(budget); budget = .invalid } }
     func sceneChanged(_ phase: ScenePhase) {
@@ -38,7 +57,7 @@ import UniformTypeIdentifiers
             background = true; UIApplication.shared.isIdleTimerDisabled = false
             if !busy { pause("В фоне ожидание остановлено. Откройте приложение и нажмите «Подключить».") }
             else if budget == .invalid { pause("iOS не разрешила продолжить передачу в фоне. Подключитесь снова в приложении.") }
-        } else if phase == .active { background = false; UIApplication.shared.isIdleTimerDisabled = busy }
+        } else if phase == .active { background = false; UIApplication.shared.isIdleTimerDisabled = busy; autoConnect() }
     }
     var connected: Bool { transport != nil && sessionToken != nil }
     func refresh() {
@@ -54,14 +73,19 @@ import UniformTypeIdentifiers
             defer { if current == generation { operation = nil } }
             do {
                 let parsed = try JSONDecoder().decode(Invitation.self, from:Data(code.utf8)); try parsed.validate()
-                if let old = invitation, old.host != parsed.host || old.token != parsed.token || old.fingerprint != parsed.fingerprint { sessionToken = nil }
+                if let old = invitation, old.fingerprint != parsed.fingerprint { sessionToken = nil }
                 invitation = parsed
                 let t = Transport(parsed); configure(t); transport?.close(); transport = t
-                status = sessionToken == nil ? "Подтвердите сопряжение в окне Windows (60 секунд)" : "Подключение…"
+                status = "Проверка связи с \(parsed.host)…"
+                try await t.probe()
+                try Task.checkCancellation()
+                status = sessionToken == nil ? "Компьютер доступен. Дождитесь запроса в окне Windows и нажмите «Разрешить» под QR-кодом (60 секунд)." : "Подключение…"
                 if let token = sessionToken { t.token = token } else { computer = try await t.pair(); sessionToken = t.token }
+                if let token = sessionToken { try PairingStore.save(SavedPairing(invitation:parsed,token:token,computer:computer)) }
                 try Task.checkCancellation(); guard current == generation else { return }
+                retryDelay = 3
                 status = "Подключено к \(computer.isEmpty ? "Windows" : computer)"; listen(t)
-            } catch { if current == generation { transport?.close(); transport = nil; status = error.localizedDescription } }
+            } catch { if current == generation { transport?.close(); transport = nil; status = error.localizedDescription; scheduleReconnect() } }
         }
     }
     private func listen(_ t: Transport) {
@@ -86,14 +110,16 @@ import UniformTypeIdentifiers
             } catch {
                 if !Task.isCancelled, transport === t { status = "Приём остановлен: \(error.localizedDescription). Нажмите «Подключить» для повтора."; transport?.close(); transport = nil }
                 if current == generation { busy = false }
+                if !Task.isCancelled { scheduleReconnect() }
             }
         }
     }
     func pause(_ reason: String) {
         generation = UUID(); listener?.cancel(); listener = nil; operation?.cancel(); operation = nil
+        retry?.cancel(); retry = nil
         transport?.close(); transport = nil; status = reason; busy = false
     }
-    func forget() { pause("Отключено. Перед новым сопряжением нажмите «Отключить устройство» в Windows."); sessionToken = nil; invitation = nil; computer = "" }
+    func forget() { pause("Отключено. Перед новым сопряжением нажмите «Забыть устройство» в Windows."); sessionToken = nil; invitation = nil; computer = ""; PairingStore.clear() }
     func cancel() { pause("Передача отменена. Незавершённые файлы не сохранены. Для продолжения нажмите «Подключить».") }
     func sendText() {
         let value = text
@@ -102,15 +128,17 @@ import UniformTypeIdentifiers
     }
     func sendFiles(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
+        status = "Выбрано файлов: \(urls.count). Подготовка…"
         perform { t in
-            for url in urls {
+            for (index,url) in urls.enumerated() {
                 try Task.checkCancellation()
+                await MainActor.run { self.status = "Подготовка файла \(index+1)/\(urls.count): \(url.lastPathComponent)" }
                 let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
                 // Coordinate reads with iCloud Drive / third-party document providers.
                 let staged = try await stageDocument(url)
                 defer { try? FileManager.default.removeItem(at:staged.deletingLastPathComponent()) }
                 await MainActor.run { self.status = "Отправка: \(url.lastPathComponent)"; self.done = 0; self.total = 0 }
-                try await t.upload(staged)
+                try await t.upload(staged,index:index+1,count:urls.count)
             }
         }
     }
@@ -120,12 +148,15 @@ import UniformTypeIdentifiers
         perform { t in
             let permission = await PHPhotoLibrary.requestAuthorization(for:.readWrite)
             guard permission == .authorized || permission == .limited else { throw TransferError.message("Нет доступа к оригиналам медиатеки. Разрешите доступ в Настройках.") }
+            var allResources:[PHAssetResource] = []
             for id in identifiers {
                 try Task.checkCancellation()
                 guard let asset = PHAsset.fetchAssets(withLocalIdentifiers:[id], options:nil).firstObject else { throw TransferError.message("Оригинал недоступен. При ограниченном доступе добавьте это фото в разрешённые.") }
                 let resources = PHAssetResource.assetResources(for:asset).filter { [.photo,.video,.pairedVideo,.alternatePhoto,.audio].contains($0.type) }
                 guard !resources.isEmpty else { throw TransferError.message("Оригинальные ресурсы не найдены") }
-                for resource in resources {
+                allResources.append(contentsOf:resources)
+            }
+                for (index,resource) in allResources.enumerated() {
                     let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory:true)
                     try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
                     defer { try? FileManager.default.removeItem(at:dir) }
@@ -134,9 +165,8 @@ import UniformTypeIdentifiers
                     try await exportOriginal(resource, to:file, cloud:cloud)
                     try Task.checkCancellation()
                     await MainActor.run { self.status = "Отправка: \(resource.originalFilename)" }
-                    try await t.upload(file)
+                    try await t.upload(file,index:index+1,count:allResources.count)
                 }
-            }
         }
     }
     private func perform(_ work: @escaping (Transport) async throws -> Void) {
@@ -145,6 +175,7 @@ import UniformTypeIdentifiers
         let current = generation
         operation = Task {
             // Wait for any receive to relinquish the server's single transfer slot.
+            status = "Подготовка отправки…"; done = 0; total = 0; busy = true
             await receiver?.value
             guard current == generation else { return }
             done = 0; total = 0; busy = true

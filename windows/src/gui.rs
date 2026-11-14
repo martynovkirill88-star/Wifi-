@@ -10,6 +10,14 @@ use std::{
 #[derive(Default)]
 struct Window {
     window: nwg::Window,
+    tabs: nwg::TabsContainer,
+    transfer: nwg::Tab,
+    connection: nwg::Tab,
+    journal: nwg::Tab,
+    labels: Vec<nwg::Label>,
+    heading_font: nwg::Font,
+    last_text: RefCell<String>,
+    island: super::island::Island,
     notice: nwg::Notice,
     address: nwg::ComboBox<String>,
     qr: nwg::ImageFrame,
@@ -39,11 +47,12 @@ impl Window {
             .address
             .selection_string()
             .unwrap_or_else(|| "127.0.0.1".into());
+        let host = host.split(" — ").next().unwrap_or("127.0.0.1");
         let json = serde_json::json!({"v":1,"host":host,"port":45831,"fingerprint":app.fingerprint,"token":app.invitation}).to_string();
         self.code.set_text(&json);
         if let Ok(q) = qrcode::QrCode::new(json.as_bytes()) {
             let modules = q.width() + 8;
-            let scale = 300 / modules;
+            let scale = 260 / modules;
             let width = modules * scale;
             let mut pixels = vec![255u8; width * width];
             for y in 0..q.width() {
@@ -78,81 +87,171 @@ pub fn run() -> anyhow::Result<()> {
     nwg::Font::set_global_family("Segoe UI")?;
     let mut w = Window::default();
     nwg::Window::builder()
-        .size((800, 890))
-        .position((200, 80))
-        .title("LocalDrop — передача по локальной сети")
+        .size((800, 700))
+        .position((160, 65))
+        .title("LocalDrop")
+        .flags(
+            nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::MINIMIZE_BOX,
+        )
         .build(&mut w.window)?;
     nwg::Notice::builder()
         .parent(&w.window)
         .build(&mut w.notice)?;
-    let mut addresses: Vec<String> = if_addrs::get_if_addrs()?
-        .into_iter()
-        .filter_map(|a| match a.ip() {
-            std::net::IpAddr::V4(ip) if !ip.is_loopback() => Some(ip.to_string()),
-            _ => None,
-        })
-        .collect();
-    addresses.sort();
-    addresses.dedup();
+    nwg::Font::builder()
+        .family("Segoe UI")
+        .size(26)
+        .weight(650)
+        .build(&mut w.heading_font)?;
+    macro_rules! label {
+        ($parent:expr,$text:expr,$x:expr,$y:expr,$width:expr,$height:expr) => {{
+            let mut label = nwg::Label::default();
+            nwg::Label::builder()
+                .parent($parent)
+                .text($text)
+                .position(($x, $y))
+                .size(($width, $height))
+                .build(&mut label)?;
+            w.labels.push(label);
+        }};
+    }
+    let mut title = nwg::Label::default();
+    nwg::Label::builder()
+        .parent(&w.window)
+        .text("LocalDrop")
+        .font(Some(&w.heading_font))
+        .position((24, 15))
+        .size((280, 42))
+        .build(&mut title)?;
+    w.labels.push(title);
+    nwg::Label::builder()
+        .parent(&w.window)
+        .position((24, 65))
+        .size((750, 42))
+        .text(
+            "Подключите iPhone на вкладке «Подключение». Файлы передаются напрямую по вашей сети.",
+        )
+        .build(&mut w.status)?;
+    nwg::TabsContainer::builder()
+        .parent(&w.window)
+        .position((20, 115))
+        .size((760, 555))
+        .build(&mut w.tabs)?;
+    nwg::Tab::builder()
+        .parent(&w.tabs)
+        .text("Передача")
+        .build(&mut w.transfer)?;
+    nwg::Tab::builder()
+        .parent(&w.tabs)
+        .text("Подключение")
+        .build(&mut w.connection)?;
+    nwg::Tab::builder()
+        .parent(&w.tabs)
+        .text("Журнал")
+        .build(&mut w.journal)?;
+    macro_rules! button {
+        ($field:ident,$parent:expr,$text:expr,$x:expr,$y:expr,$width:expr) => {
+            nwg::Button::builder()
+                .parent($parent)
+                .text($text)
+                .position(($x, $y))
+                .size(($width, 34))
+                .build(&mut w.$field)?;
+        };
+    }
+    button!(folder, &w.window, "Открыть полученные", 450, 20, 200);
+    button!(quit, &w.window, "Выход", 665, 20, 110);
+    label!(&w.transfer, "ФАЙЛЫ", 20, 20, 300, 22);
+    button!(files, &w.transfer, "Отправить файлы…", 20, 50, 230);
+    button!(cancel, &w.transfer, "Отменить передачи", 265, 50, 225);
+    label!(&w.transfer, "ТЕКСТ НА IPHONE", 20, 110, 500, 22);
+    nwg::TextBox::builder()
+        .parent(&w.transfer)
+        .position((20, 140))
+        .size((710, 105))
+        .limit(1024 * 1024)
+        .build(&mut w.text)?;
+    button!(paste, &w.transfer, "Вставить из буфера", 20, 258, 230);
+    button!(send, &w.transfer, "Отправить текст", 265, 258, 225);
+    label!(
+        &w.transfer,
+        "ПОЛУЧЕННЫЙ ТЕКСТ · автоматически копируется в буфер",
+        20,
+        315,
+        710,
+        24
+    );
+    nwg::TextBox::builder()
+        .parent(&w.transfer)
+        .position((20, 345))
+        .size((710, 90))
+        .readonly(true)
+        .limit(1024 * 1024)
+        .build(&mut w.received)?;
+    button!(copy, &w.transfer, "Копировать ещё раз", 20, 448, 230);
+    label!(&w.connection, "СЕТЕВОЙ АДРЕС КОМПЬЮТЕРА", 20, 20, 710, 22);
+    let mut addresses = localdrop::network::addresses()?;
     if addresses.is_empty() {
-        addresses.push("127.0.0.1".into());
+        addresses.push("127.0.0.1 — сеть не найдена".into());
     }
     nwg::ComboBox::builder()
-        .parent(&w.window)
-        .position((20, 15))
-        .size((310, 28))
+        .parent(&w.connection)
+        .position((20, 48))
+        .size((710, 28))
         .collection(addresses)
         .selected_index(Some(0))
         .build(&mut w.address)?;
     nwg::ImageFrame::builder()
-        .parent(&w.window)
-        .position((20, 55))
-        .size((300, 300))
+        .parent(&w.connection)
+        .position((20, 95))
+        .size((260, 260))
         .build(&mut w.qr)?;
+    label!(&w.connection,"1. Откройте LocalDrop на iPhone.\r\n2. Сканируйте этот QR-код.\r\n3. При появлении запроса нажмите «Разрешить».\r\n\r\nСопряжение запоминается. Не передавайте код посторонним.",305,95,425,115);
+    label!(
+        &w.connection,
+        "КОД ДЛЯ РУЧНОГО ПОДКЛЮЧЕНИЯ",
+        305,
+        220,
+        425,
+        22
+    );
     nwg::TextBox::builder()
-        .parent(&w.window)
-        .position((340, 55))
-        .size((435, 190))
+        .parent(&w.connection)
+        .position((305, 248))
+        .size((425, 107))
         .readonly(true)
         .build(&mut w.code)?;
-    nwg::Label::builder().parent(&w.window).position((340,250)).size((435,80)).text("Выберите IP своей Wi-Fi сети. Сканируйте QR или вставьте весь код вручную на iPhone. Не передавайте код посторонним.").build(&mut w.status)?;
-    macro_rules! button {
-        ($field:ident,$text:expr,$x:expr,$y:expr,$width:expr) => {
-            nwg::Button::builder()
-                .parent(&w.window)
-                .text($text)
-                .position(($x, $y))
-                .size(($width, 32))
-                .build(&mut w.$field)?;
-        };
-    }
-    button!(allow, "Разрешить", 20, 365, 145);
-    button!(deny, "Отклонить", 175, 365, 145);
-    button!(disconnect, "Отключить устройство", 340, 365, 210);
-    button!(quit, "Выход", 565, 365, 210);
-    button!(files, "Отправить файлы…", 20, 410, 230);
-    button!(cancel, "Отменить передачи", 265, 410, 245);
-    button!(folder, "Открыть полученные", 525, 410, 250);
+    button!(allow, &w.connection, "Разрешить", 20, 375, 125);
+    button!(deny, &w.connection, "Отклонить", 155, 375, 125);
+    button!(
+        disconnect,
+        &w.connection,
+        "Забыть устройство",
+        305,
+        375,
+        210
+    );
+    w.allow.set_enabled(false);
+    w.deny.set_enabled(false);
+    label!(&w.connection,"Выбирайте Ethernet или Wi-Fi домашней сети. VPN и виртуальные адаптеры могут быть недоступны с телефона.",20,430,710,60);
+    label!(&w.journal, "ПОЛУЧЕННЫЕ ФАЙЛЫ", 20, 20, 710, 22);
+    let received_path = localdrop::storage::documents_received()?;
+    label!(
+        &w.journal,
+        &received_path.display().to_string(),
+        20,
+        50,
+        710,
+        45
+    );
+    label!(&w.journal, "ИСТОРИЯ ПЕРЕДАЧ", 20, 110, 710, 22);
     nwg::TextBox::builder()
-        .parent(&w.window)
-        .position((20, 455))
-        .size((755, 110))
-        .build(&mut w.text)?;
-    button!(paste, "Вставить текст", 20, 575, 230);
-    button!(send, "Отправить текст", 265, 575, 245);
-    nwg::TextBox::builder()
-        .parent(&w.window)
-        .position((20, 617))
-        .size((755, 90))
-        .readonly(true)
-        .build(&mut w.received)?;
-    button!(copy, "Копировать полученный текст", 20, 718, 320);
-    nwg::TextBox::builder()
-        .parent(&w.window)
-        .position((20, 760))
-        .size((755, 110))
+        .parent(&w.journal)
+        .position((20, 140))
+        .size((710, 345))
         .readonly(true)
         .build(&mut w.history)?;
+    w.tabs.set_selected_tab(1);
+    w.island = super::island::Island::build(&w.window)?;
     w.icon = nwg::Icon::from_system(nwg::OemIcon::Information);
     nwg::TrayNotification::builder()
         .parent(&w.window)
@@ -175,8 +274,9 @@ pub fn run() -> anyhow::Result<()> {
         .truncate(false)
         .share_mode(0)
         .open(root.join("instance.lock"))?;
-    let app = App::new(
+    let app = App::persistent(
         root,
+        localdrop::storage::documents_received()?,
         Arc::new(move |m| {
             let mut q = events.lock().unwrap();
             if q.len() >= 64 {
@@ -203,6 +303,10 @@ pub fn run() -> anyhow::Result<()> {
     });
     let w = Rc::new(w);
     w.show_qr(&app);
+    if app.session.lock().unwrap().is_some() {
+        w.tabs.set_selected_tab(0);
+        w.status.set_text("Устройство сохранено. Откройте LocalDrop на iPhone — соединение восстановится автоматически.");
+    }
     let handler = nwg::full_bind_event_handler(&w.window.handle, {
         let w = w.clone();
         let app = app.clone();
@@ -219,12 +323,42 @@ pub fn run() -> anyhow::Result<()> {
                 w.window.set_focus();
             }
             if event == E::OnNotice && handle == w.notice.handle {
+                let pending = app.pending.lock().unwrap().is_some();
+                w.allow.set_enabled(pending);
+                w.deny.set_enabled(pending);
+                if pending {
+                    w.window.set_visible(true);
+                    w.tabs.set_selected_tab(1);
+                }
                 for message in messages.lock().unwrap().drain(..) {
                     if let Some(text) = message.strip_prefix("TEXT:") {
                         w.received.set_text(text);
-                        w.status.set_text("Получен текст");
+                        *w.last_text.borrow_mut() = text.to_owned();
+                        nwg::Clipboard::set_data_text(&w.window, text);
+                        w.status.set_text(
+                            if nwg::Clipboard::data_text(&w.window).as_deref() == Some(text) {
+                                "Текст получен и скопирован в буфер обмена"
+                            } else {
+                                "Текст получен. Буфер занят — нажмите «Копировать»."
+                            },
+                        );
+                    } else if let Some(progress) = message
+                        .strip_prefix("TRANSFER:")
+                        .and_then(|s| serde_json::from_str::<localdrop::server::Progress>(s).ok())
+                    {
+                        w.island.update(&progress);
+                        w.status.set_text(&progress.description());
                     } else {
                         w.status.set_text(&message);
+                        if message.starts_with("Сопряжено:") {
+                            w.tabs.set_selected_tab(0);
+                        }
+                        if message.contains("отменен")
+                            || message.contains("отменён")
+                            || message.starts_with("Ошибка")
+                        {
+                            w.island.finish(&message);
+                        }
                         if !message.starts_with("Отправка:")
                             && !message.starts_with("Приём:")
                             && !message.starts_with("Подготовка:")
@@ -240,8 +374,12 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
             }
+            if event == E::OnTimerTick && handle == w.island.timer {
+                w.island.tick();
+            }
             if event == E::OnComboxBoxSelection && handle == w.address.handle {
                 w.show_qr(&app);
+                w.status.set_text("Адрес изменён. Сканируйте обновлённый QR на iPhone. Выбирайте Ethernet или Wi-Fi своей сети, а не VPN.");
             }
             if event != E::OnButtonClick {
                 return;
@@ -275,7 +413,7 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
             if handle == w.copy.handle {
-                nwg::Clipboard::set_data_text(&w.window, &w.received.text());
+                nwg::Clipboard::set_data_text(&w.window, &w.last_text.borrow());
             }
             if handle == w.send.handle {
                 let text = w.text.text();
@@ -289,6 +427,8 @@ pub fn run() -> anyhow::Result<()> {
                     size: text.len() as u64,
                     sha256: String::new(),
                     text: Some(text),
+                    index: 1,
+                    count: 1,
                     path: None,
                 };
                 match app.enqueue(item) {
@@ -309,11 +449,16 @@ pub fn run() -> anyhow::Result<()> {
                         let a = app.clone();
                         let batch_cancel = a.cancel.lock().unwrap().clone();
                         rt.spawn(async move {
-                            for path in paths {
+                            let count = paths.len() as u32;
+                            for (index, path) in paths.into_iter().enumerate() {
                                 if batch_cancel.is_cancelled() {
                                     break;
                                 }
-                                if let Err(e) = a.clone().queue_file(path.into()).await {
+                                if let Err(e) = a
+                                    .clone()
+                                    .queue_file_batch(path.into(), index as u32 + 1, count)
+                                    .await
+                                {
                                     (a.ui)(format!("Ошибка подготовки файла: {e}"));
                                     break;
                                 }
@@ -326,7 +471,7 @@ pub fn run() -> anyhow::Result<()> {
     });
     nwg::dispatch_thread_events();
     nwg::unbind_event_handler(&handler);
-    app.disconnect();
+    app.cancel_all();
     runtime.shutdown_timeout(std::time::Duration::from_secs(2));
     Ok(())
 }

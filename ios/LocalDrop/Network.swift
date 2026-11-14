@@ -78,15 +78,27 @@ final class Transport: NSObject, URLSessionDelegate, URLSessionTaskDelegate, URL
         struct Result: Decodable { let session: String; let name: String }
         let result = try JSONDecoder().decode(Result.self, from: data); token = result.session; return result.name
     }
+    func probe() async throws {
+        var r = try request("hello"); r.timeoutInterval = 8
+        do {
+            let (data,response) = try await session.data(for:r)
+            if (response as? HTTPURLResponse)?.statusCode == 404 { throw TransferError.message("Обновите Windows-программу: она не поддерживает проверку подключения.") }
+            _ = try check(response,data:data)
+            struct Hello: Decodable { let v: Int }
+            guard try JSONDecoder().decode(Hello.self,from:data).v == 1 else { throw TransferError.message("Неподдерживаемая версия компьютера") }
+        } catch let error as URLError {
+            throw TransferError.message("Нет связи с \(invitation.host):\(invitation.port) (\(error.code.rawValue)). Выберите адрес Ethernet/Wi-Fi в Windows и сканируйте QR снова. Проверьте общую сеть, разрешение «Локальная сеть» для LocalDrop и брандмауэр Windows. VPN может мешать доступу к LAN.")
+        }
+    }
     func next() async throws -> Envelope? {
         let (data,r) = try await session.data(for: request("next")); let status = try check(r,data:data)
         return status == 204 ? nil : try JSONDecoder().decode(Envelope.self, from: data)
     }
     func ack(_ id: String) async throws { let (_,r) = try await session.data(for: request("ack/" + id, method: "POST")); _ = try check(r) }
-    func upload(_ file: URL) async throws {
+    func upload(_ file: URL, index: Int = 1, count: Int = 1) async throws {
         let (size, hash) = try await digestAsync(file)
         try Task.checkCancellation()
-        let q = [URLQueryItem(name:"name",value:file.lastPathComponent), URLQueryItem(name:"size",value:String(size)), URLQueryItem(name:"sha256",value:hash)]
+        let q = [URLQueryItem(name:"name",value:file.lastPathComponent), URLQueryItem(name:"size",value:String(size)), URLQueryItem(name:"sha256",value:hash), URLQueryItem(name:"index",value:String(index)), URLQueryItem(name:"count",value:String(count))]
         var r = try request("upload", method:"POST", query:q); r.setValue("application/octet-stream",forHTTPHeaderField:"Content-Type")
         let (data,response) = try await session.upload(for:r, fromFile:file); _ = try check(response,data:data)
     }

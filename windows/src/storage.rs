@@ -31,6 +31,24 @@ pub fn safe_name(input: &str) -> String {
     }
     s
 }
+#[cfg(windows)]
+pub fn documents_received() -> Result<PathBuf> {
+    use windows_sys::Win32::{
+        System::Com::CoTaskMemFree,
+        UI::Shell::{FOLDERID_Documents, SHGetKnownFolderPath},
+    };
+    let mut raw = std::ptr::null_mut();
+    unsafe {
+        let result = SHGetKnownFolderPath(&FOLDERID_Documents, 0, std::ptr::null_mut(), &mut raw);
+        if result < 0 {
+            bail!("Не удалось открыть папку Документы: HRESULT {result:X}");
+        }
+        let len = (0..).take_while(|&i| *raw.add(i) != 0).count();
+        let path = String::from_utf16_lossy(std::slice::from_raw_parts(raw, len));
+        CoTaskMemFree(raw.cast());
+        Ok(PathBuf::from(path).join("LocalDrop").join("Received"))
+    }
+}
 pub fn hash(path: &Path) -> Result<(u64, String)> {
     let mut f = File::open(path)?;
     let mut h = Sha256::new();

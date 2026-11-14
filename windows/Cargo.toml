@@ -22,9 +22,10 @@ subtle = "2"
 if-addrs = "0.13"
 
 [target.'cfg(windows)'.dependencies]
-native-windows-gui = { version = "1.0.13", default-features = false, features = ["notice", "combobox", "textbox", "clipboard", "file-dialog", "tray-notification", "image-decoder"] }
+native-windows-gui = { version = "1.0.13", default-features = false, features = ["notice", "combobox", "textbox", "clipboard", "file-dialog", "tray-notification", "image-decoder", "tabs", "progress-bar"] }
 qrcode = { version = "0.14", default-features = false }
 png = "0.18"
+windows-sys = { version = "0.59", features = ["Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_System_Com", "Win32_Security_Cryptography"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
