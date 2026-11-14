@@ -108,7 +108,10 @@ import UniformTypeIdentifiers
                     if background { pause("Передача завершена. Откройте приложение для следующих файлов."); return }
                 }
             } catch {
-                if !Task.isCancelled, transport === t { status = "Приём остановлен: \(error.localizedDescription). Нажмите «Подключить» для повтора."; transport?.close(); transport = nil }
+                if !Task.isCancelled, transport === t {
+                    if let transferError = error as? TransferError, case .unauthorized = transferError { sessionToken = nil; PairingStore.clear() }
+                    status = "Приём остановлен: \(error.localizedDescription)"; transport?.close(); transport = nil
+                }
                 if current == generation { busy = false }
                 if !Task.isCancelled { scheduleReconnect() }
             }
@@ -181,7 +184,7 @@ import UniformTypeIdentifiers
             done = 0; total = 0; busy = true
             do { try await work(t); try Task.checkCancellation(); status = "Отправлено" }
             catch { if current == generation { status = "Отправка остановлена: \(error.localizedDescription)" } }
-            if current == generation { busy = false; operation = nil; if background { pause("Отправка завершена. Откройте приложение для продолжения.") } else { listen(t) } }
+            if current == generation { busy = false; operation = nil; if background { pause(status + ". Откройте приложение для продолжения.") } else { listen(t) } }
         }
     }
     func saveToPhotos(_ url: URL) {

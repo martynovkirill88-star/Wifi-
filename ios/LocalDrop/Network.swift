@@ -18,7 +18,8 @@ struct Invitation: Codable {
 struct Envelope: Codable { let id: String; let name: String; let size: UInt64; let sha256: String; let text: String? }
 enum TransferError: LocalizedError {
     case message(String)
-    var errorDescription: String? { if case let .message(s) = self { return s }; return nil }
+    case unauthorized
+    var errorDescription: String? { if case let .message(s) = self { return s }; return "Сопряжение отозвано на компьютере. Сканируйте QR заново." }
 }
 final class Transport: NSObject, URLSessionDelegate, URLSessionTaskDelegate, URLSessionDownloadDelegate {
     let invitation: Invitation
@@ -63,6 +64,7 @@ final class Transport: NSObject, URLSessionDelegate, URLSessionTaskDelegate, URL
     }
     func check(_ response: URLResponse, data: Data? = nil) throws -> Int {
         guard let r = response as? HTTPURLResponse else { throw TransferError.message("Нет ответа компьютера") }
+        if r.statusCode == 401 { throw TransferError.unauthorized }
         guard (200..<300).contains(r.statusCode) else {
             let detail = data.flatMap { String(data:$0.prefix(2048),encoding:.utf8) } ?? "Проверьте сопряжение, свободное место и очередь передач."
             throw TransferError.message("Компьютер вернул HTTP \(r.statusCode): \(detail)")
