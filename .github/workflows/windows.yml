@@ -17,6 +17,9 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo build --release --locked -p localdrop
+      - name: Verify EXE starts with Common Controls v6
+        shell: pwsh
+        run: ./scripts/windows-startup.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: LocalDrop-Windows-x64
