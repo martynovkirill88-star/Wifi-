@@ -1,0 +1,11 @@
+.tools/
+rustup-init.exe
+target/
+.DS_Store
+build/
+*.ipa
+*.exe
+ios/LocalDrop.xcodeproj/
+ios/Info.plist
+ios/WidgetInfo.plist
+*.xcuserstate

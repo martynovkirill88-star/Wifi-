@@ -1,0 +1,25 @@
+name: Windows EXE
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --locked -- -D warnings
+      - run: cargo build --release --locked -p localdrop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LocalDrop-Windows-x64
+          path: target/release/localdrop.exe
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,61 @@
+name: LocalDrop
+options:
+  bundleIdPrefix: local.localdrop
+  deploymentTarget:
+    iOS: '16.2'
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    TARGETED_DEVICE_FAMILY: '1,2'
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGNING_REQUIRED: NO
+    DEVELOPMENT_TEAM: ''
+targets:
+  LocalDrop:
+    type: application
+    platform: iOS
+    sources: [LocalDrop, Shared]
+    dependencies:
+      - target: LocalDropActivity
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: LocalDrop
+        UILaunchScreen: {}
+        UISupportsDocumentBrowser: false
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        NSLocalNetworkUsageDescription: Прямая передача файлов между iPhone и вашим компьютером.
+        NSCameraUsageDescription: Сканирование QR-кода сопряжения с компьютером.
+        NSPhotoLibraryUsageDescription: Чтение оригинальных файлов выбранных фото и видео.
+        NSPhotoLibraryAddUsageDescription: Сохранение полученных фото и видео в медиатеку.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSSupportsLiveActivities: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.localdrop.app
+        MARKETING_VERSION: '0.1.0'
+        CURRENT_PROJECT_VERSION: '1'
+  LocalDropActivity:
+    type: app-extension
+    platform: iOS
+    sources: [LiveWidget, Shared]
+    info:
+      path: WidgetInfo.plist
+      properties:
+        CFBundleDisplayName: LocalDrop Transfer
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.localdrop.app.activity
+        MARKETING_VERSION: '0.1.0'
+        CURRENT_PROJECT_VERSION: '1'
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+schemes:
+  LocalDrop:
+    build:
+      targets:
+        LocalDrop: all
