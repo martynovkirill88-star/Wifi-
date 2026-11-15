@@ -1,10 +1,20 @@
 use localdrop::server::Progress;
 use native_windows_gui as nwg;
-use std::{cell::{Cell, RefCell}, rc::Rc, time::Instant};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::Instant,
+};
 use windows_sys::Win32::{
     Foundation::RECT,
-    Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn, CreateSolidBrush, DeleteObject, FillRect, BeginPaint, EndPaint, PAINTSTRUCT, SetTextColor, SetBkMode, TRANSPARENT, InvalidateRect},
-    UI::WindowsAndMessaging::{KillTimer, SetLayeredWindowAttributes, SetTimer, LWA_ALPHA, WM_PAINT, WM_ERASEBKGND, WM_CTLCOLORSTATIC, GetClientRect},
+    Graphics::Gdi::{
+        BeginPaint, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
+        InvalidateRect, SetBkMode, SetTextColor, SetWindowRgn, PAINTSTRUCT, TRANSPARENT,
+    },
+    UI::WindowsAndMessaging::{
+        GetClientRect, KillTimer, SetLayeredWindowAttributes, SetTimer, LWA_ALPHA,
+        WM_CTLCOLORSTATIC, WM_ERASEBKGND, WM_PAINT,
+    },
 };
 
 #[derive(Default)]
@@ -40,32 +50,75 @@ impl Island {
             .position((76, 36))
             .size((382, 21))
             .build(&mut s.detail)?;
-        nwg::Font::builder().family("Segoe UI Symbol").size(31).build(&mut s.logo_font)?;
-        nwg::Label::builder().parent(&s.window).font(Some(&s.logo_font)).text("⇄").position((21,18)).size((44,42)).build(&mut s.logo)?;
+        nwg::Font::builder()
+            .family("Segoe UI Symbol")
+            .size(31)
+            .build(&mut s.logo_font)?;
+        nwg::Label::builder()
+            .parent(&s.window)
+            .font(Some(&s.logo_font))
+            .text("⇄")
+            .position((21, 18))
+            .size((44, 42))
+            .build(&mut s.logo)?;
         let progress = s.percent.clone();
         let logo_hwnd = s.logo.handle.hwnd().unwrap() as isize;
-        s.paint_handler = Some(nwg::bind_raw_event_handler(&s.window.handle,0x10044,move |hwnd,msg,w,l| unsafe {
-            if msg == WM_CTLCOLORSTATIC {
-                let hdc = w as _;
-                SetTextColor(hdc,if l == logo_hwnd { 0x00dbe255 } else { 0x00fafafa });
-                SetBkMode(hdc,TRANSPARENT as i32);
-                // Stock black brush is owned by the OS.
-                return Some(windows_sys::Win32::Graphics::Gdi::GetStockObject(windows_sys::Win32::Graphics::Gdi::BLACK_BRUSH) as isize);
-            }
-            if msg == WM_PAINT || msg == WM_ERASEBKGND {
-                let mut ps:PAINTSTRUCT = std::mem::zeroed();
-                let hdc = if msg == WM_PAINT { BeginPaint(hwnd as _,&mut ps) } else { w as _ };
-                let mut rect:RECT = std::mem::zeroed(); GetClientRect(hwnd as _,&mut rect);
-                let black = CreateSolidBrush(0); FillRect(hdc,&rect,black); DeleteObject(black);
-                let track = RECT {left:76,top:64,right:456,bottom:67};
-                let grey = CreateSolidBrush(0x00242424); FillRect(hdc,&track,grey); DeleteObject(grey);
-                let fill = RECT {right:76+(380*progress.get()/1000) as i32,..track};
-                let cyan = CreateSolidBrush(0x00dbe255); FillRect(hdc,&fill,cyan); DeleteObject(cyan);
-                if msg == WM_PAINT { EndPaint(hwnd as _,&ps); }
-                return Some(if msg == WM_ERASEBKGND {1} else {0});
-            }
-            None
-        })?);
+        s.paint_handler = Some(nwg::bind_raw_event_handler(
+            &s.window.handle,
+            0x10044,
+            move |hwnd, msg, w, l| unsafe {
+                if msg == WM_CTLCOLORSTATIC {
+                    let hdc = w as _;
+                    SetTextColor(
+                        hdc,
+                        if l == logo_hwnd {
+                            0x00dbe255
+                        } else {
+                            0x00fafafa
+                        },
+                    );
+                    SetBkMode(hdc, TRANSPARENT as i32);
+                    // Stock black brush is owned by the OS.
+                    return Some(windows_sys::Win32::Graphics::Gdi::GetStockObject(
+                        windows_sys::Win32::Graphics::Gdi::BLACK_BRUSH,
+                    ) as isize);
+                }
+                if msg == WM_PAINT || msg == WM_ERASEBKGND {
+                    let mut ps: PAINTSTRUCT = std::mem::zeroed();
+                    let hdc = if msg == WM_PAINT {
+                        BeginPaint(hwnd as _, &mut ps)
+                    } else {
+                        w as _
+                    };
+                    let mut rect: RECT = std::mem::zeroed();
+                    GetClientRect(hwnd as _, &mut rect);
+                    let black = CreateSolidBrush(0);
+                    FillRect(hdc, &rect, black);
+                    DeleteObject(black);
+                    let track = RECT {
+                        left: 76,
+                        top: 64,
+                        right: 456,
+                        bottom: 67,
+                    };
+                    let grey = CreateSolidBrush(0x00242424);
+                    FillRect(hdc, &track, grey);
+                    DeleteObject(grey);
+                    let fill = RECT {
+                        right: 76 + (380 * progress.get() / 1000) as i32,
+                        ..track
+                    };
+                    let cyan = CreateSolidBrush(0x00dbe255);
+                    FillRect(hdc, &fill, cyan);
+                    DeleteObject(cyan);
+                    if msg == WM_PAINT {
+                        EndPaint(hwnd as _, &ps);
+                    }
+                    return Some(if msg == WM_ERASEBKGND { 1 } else { 0 });
+                }
+                None
+            },
+        )?);
         s.timer = nwg::ControlHandle::Timer(parent.handle.hwnd().unwrap(), 0x4c44);
         unsafe {
             let hwnd = s.window.handle.hwnd().unwrap() as _;
@@ -99,7 +152,9 @@ impl Island {
         } else {
             ((p.done as f64 / p.total as f64) * 1000.0).min(1000.0) as u32
         });
-        unsafe { InvalidateRect(self.window.handle.hwnd().unwrap() as _,std::ptr::null(),1); }
+        unsafe {
+            InvalidateRect(self.window.handle.hwnd().unwrap() as _, std::ptr::null(), 1);
+        }
         self.window.set_visible(true);
         if p.complete && p.index == p.count {
             self.finish("Передача завершена");
@@ -146,6 +201,8 @@ impl Island {
 impl Drop for Island {
     fn drop(&mut self) {
         self.stop_timer();
-        if let Some(handler) = self.paint_handler.take() { let _ = nwg::unbind_raw_event_handler(&handler); }
+        if let Some(handler) = self.paint_handler.take() {
+            let _ = nwg::unbind_raw_event_handler(&handler);
+        }
     }
 }

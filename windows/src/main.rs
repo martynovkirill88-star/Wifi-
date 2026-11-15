@@ -3,7 +3,8 @@
 mod gui;
 #[cfg(windows)]
 mod island;
-#[cfg(windows)] mod startup;
+#[cfg(windows)]
+mod startup;
 fn main() {
     #[cfg(windows)]
     if let Err(e) = gui::run() {

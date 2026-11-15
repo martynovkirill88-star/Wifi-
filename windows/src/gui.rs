@@ -91,7 +91,15 @@ pub fn run() -> anyhow::Result<()> {
         .size((800, 700))
         .position((160, 65))
         .title("LocalDrop")
-        .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::MINIMIZE_BOX | if std::env::args().any(|a|a == "--tray") {nwg::WindowFlags::empty()} else {nwg::WindowFlags::VISIBLE})
+        .flags(
+            nwg::WindowFlags::WINDOW
+                | nwg::WindowFlags::MINIMIZE_BOX
+                | if std::env::args().any(|a| a == "--tray") {
+                    nwg::WindowFlags::empty()
+                } else {
+                    nwg::WindowFlags::VISIBLE
+                },
+        )
         .build(&mut w.window)?;
     nwg::Notice::builder()
         .parent(&w.window)
@@ -231,7 +239,12 @@ pub fn run() -> anyhow::Result<()> {
     );
     w.allow.set_enabled(false);
     w.deny.set_enabled(false);
-    nwg::CheckBox::builder().parent(&w.connection).text("Запускать вместе с Windows (в трей)").position((20,495)).size((710,24)).build(&mut w.autostart)?;
+    nwg::CheckBox::builder()
+        .parent(&w.connection)
+        .text("Запускать вместе с Windows (в трей)")
+        .position((20, 495))
+        .size((710, 24))
+        .build(&mut w.autostart)?;
     label!(&w.connection,"Выбирайте Ethernet или Wi-Fi домашней сети. VPN и виртуальные адаптеры могут быть недоступны с телефона.",20,430,710,60);
     label!(&w.journal, "ПОЛУЧЕННЫЕ ФАЙЛЫ", 20, 20, 710, 22);
     let received_path = localdrop::storage::documents_received()?;
@@ -269,9 +282,15 @@ pub fn run() -> anyhow::Result<()> {
     std::fs::create_dir_all(&root)?;
     let startup_root = root.clone();
     let start_enabled = super::startup::enabled(&root);
-    w.autostart.set_check_state(if start_enabled {nwg::CheckBoxState::Checked} else {nwg::CheckBoxState::Unchecked});
+    w.autostart.set_check_state(if start_enabled {
+        nwg::CheckBoxState::Checked
+    } else {
+        nwg::CheckBoxState::Unchecked
+    });
     if std::env::var_os("CI").is_none() {
-        if let Err(e) = super::startup::set(&root,start_enabled) { w.status.set_text(&e.to_string()); }
+        if let Err(e) = super::startup::set(&root, start_enabled) {
+            w.status.set_text(&e.to_string());
+        }
     }
     use std::os::windows::fs::OpenOptionsExt;
     let _instance = std::fs::OpenOptions::new()
@@ -297,7 +316,15 @@ pub fn run() -> anyhow::Result<()> {
         .worker_threads(2)
         .enable_all()
         .build()?;
-    let discovery = match localdrop::network::advertise(&app.fingerprint) { Ok(d)=>Some(d),Err(e)=>{(app.ui)(format!("Автообнаружение недоступно: {e}. Подключение по QR/IP доступно."));None} };
+    let discovery = match localdrop::network::advertise(&app.fingerprint) {
+        Ok(d) => Some(d),
+        Err(e) => {
+            (app.ui)(format!(
+                "Автообнаружение недоступно: {e}. Подключение по QR/IP доступно."
+            ));
+            None
+        }
+    };
     runtime.spawn({
         let a = app.clone();
         async move {
@@ -392,7 +419,12 @@ pub fn run() -> anyhow::Result<()> {
                 return;
             }
             if handle == w.autostart.handle {
-                if let Err(e) = super::startup::set(&startup_root,w.autostart.check_state() == nwg::CheckBoxState::Checked) { w.status.set_text(&e.to_string()); }
+                if let Err(e) = super::startup::set(
+                    &startup_root,
+                    w.autostart.check_state() == nwg::CheckBoxState::Checked,
+                ) {
+                    w.status.set_text(&e.to_string());
+                }
             }
             if handle == w.allow.handle {
                 app.answer(true);
@@ -482,7 +514,9 @@ pub fn run() -> anyhow::Result<()> {
     nwg::dispatch_thread_events();
     nwg::unbind_event_handler(&handler);
     app.cancel_all();
-    if let Some(d) = discovery { let _ = d.shutdown(); }
+    if let Some(d) = discovery {
+        let _ = d.shutdown();
+    }
     runtime.shutdown_timeout(std::time::Duration::from_secs(2));
     Ok(())
 }
