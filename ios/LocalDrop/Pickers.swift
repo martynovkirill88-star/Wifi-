@@ -7,7 +7,7 @@ struct DocumentPicker: UIViewControllerRepresentable {
     let selected: ([URL]) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(selected) }
     func makeUIViewController(context:Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes:[.item],asCopy:true)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes:[.data],asCopy:true)
         picker.allowsMultipleSelection = true; picker.delegate = context.coordinator
         return picker
     }

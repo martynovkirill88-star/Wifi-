@@ -47,6 +47,14 @@ pub fn addresses() -> std::io::Result<Vec<String>> {
     addresses.dedup();
     Ok(addresses.into_iter().map(|(_, label)| label).collect())
 }
+pub fn advertise(fingerprint:&str)->anyhow::Result<mdns_sd::ServiceDaemon> {
+    let address = addresses()?.into_iter().next().ok_or_else(||anyhow::anyhow!("Нет локального сетевого адреса"))?;
+    let ip = address.split(" — ").next().unwrap();
+    let daemon = mdns_sd::ServiceDaemon::new()?;
+    let service = mdns_sd::ServiceInfo::new("_localdrop._tcp.local.",&format!("LocalDrop-{}",&fingerprint[..8]),&format!("localdrop-{}.local.",&fingerprint[..12]),ip,45831,&[("fingerprint",fingerprint),("v","1")][..])?;
+    daemon.register(service)?;
+    Ok(daemon)
+}
 
 #[cfg(test)]
 mod tests {

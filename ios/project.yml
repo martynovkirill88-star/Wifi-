@@ -26,6 +26,7 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         NSLocalNetworkUsageDescription: Прямая передача файлов между iPhone и вашим компьютером.
+        NSBonjourServices: ['_localdrop._tcp']
         NSCameraUsageDescription: Сканирование QR-кода сопряжения с компьютером.
         NSPhotoLibraryUsageDescription: Чтение оригинальных файлов выбранных фото и видео.
         NSPhotoLibraryAddUsageDescription: Сохранение полученных фото и видео в медиатеку.
@@ -35,8 +36,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: local.localdrop.app
-        MARKETING_VERSION: '0.1.0'
-        CURRENT_PROJECT_VERSION: '1'
+        MARKETING_VERSION: '0.2.1'
+        CURRENT_PROJECT_VERSION: '3'
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   LocalDropActivity:
     type: app-extension
     platform: iOS
@@ -50,12 +52,24 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: local.localdrop.app.activity
-        MARKETING_VERSION: '0.1.0'
-        CURRENT_PROJECT_VERSION: '1'
+        MARKETING_VERSION: '0.2.1'
+        CURRENT_PROJECT_VERSION: '3'
         APPLICATION_EXTENSION_API_ONLY: YES
         SKIP_INSTALL: YES
+  LocalDropTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [LocalDropTests]
+    dependencies:
+      - target: LocalDrop
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: local.localdrop.tests
 schemes:
   LocalDrop:
     build:
       targets:
         LocalDrop: all
+    test:
+      targets: [LocalDropTests]

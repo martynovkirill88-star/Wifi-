@@ -13,10 +13,11 @@ import Photos
     }
 }
 struct ContentView: View {
+    private enum Picker: String, Identifiable { case scanner,photos,files; var id:String { rawValue } }
     @ObservedObject var model: Model
-    @State private var scanner = false
-    @State private var photos = false
-    @State private var files = false
+    @State private var picker:Picker?
+    @State private var pendingFiles:[URL] = []
+    @State private var pendingAssets:[String] = []
     var body: some View {
         NavigationStack {
             Form {
@@ -24,7 +25,7 @@ struct ContentView: View {
                     Text(model.status).textSelection(.enabled)
                     if !model.computer.isEmpty { Label(model.computer,systemImage:"desktopcomputer") }
                     HStack {
-                        Button("Сканировать QR") { scanner = true }
+                        Button("Сканировать QR") { picker = .scanner }
                         Button("Подключить") { model.connect() }
                     }.buttonStyle(.bordered)
                     DisclosureGroup("Ручное подключение") {
@@ -36,11 +37,17 @@ struct ContentView: View {
                 }
                 Section("Отправить") {
                     Button("Фото и видео — оригиналы") {
-                        Task { _ = await PHPhotoLibrary.requestAuthorization(for:.readWrite); photos = true }
+                        Task { _ = await PHPhotoLibrary.requestAuthorization(for:.readWrite); picker = .photos }
                     }.disabled(!model.connected || model.busy)
                     Toggle("Разрешить загрузку оригиналов из iCloud",isOn:$model.allowCloud)
                     Text("Оригиналы из iCloud требуют интернета и места на iPhone. Live Photo отправляется фото и отдельным видео. Изменённые версии не экспортируются.").font(.caption).foregroundStyle(.secondary)
-                    Button("Выбрать файлы") { files = true }.disabled(!model.connected || model.busy)
+                    Button("Выбрать файлы") { picker = .files }.disabled(!model.connected || model.busy)
+                    if !model.selectedFileNames.isEmpty {
+                        VStack(alignment:.leading,spacing:4) {
+                            Text("Выбрано файлов: \(model.selectedFileNames.count)").font(.headline)
+                            ForEach(Array(model.selectedFileNames.enumerated()),id:\.offset) { _,name in Text(name).font(.caption).lineLimit(1) }
+                        }
+                    }
                     TextEditor(text:$model.text).frame(minHeight:85)
                     HStack {
                         PasteButton(payloadType:String.self) { model.text = $0.first ?? "" }
@@ -74,16 +81,27 @@ struct ContentView: View {
                         }
                     }
                 }
+                Section {
+                    Text("LocalDrop \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "") · сборка \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "")").font(.caption).foregroundStyle(.secondary)
+                }
             }.navigationTitle("LocalDrop")
-            .sheet(isPresented:$scanner) {
+            .sheet(item:$picker,onDismiss: {
+                if !pendingFiles.isEmpty { let urls = pendingFiles; pendingFiles = []; model.sendFiles(urls) }
+                else if !pendingAssets.isEmpty { let ids = pendingAssets; pendingAssets = []; model.sendAssets(ids) }
+            }) { selected in
+                switch selected {
+                case .scanner:
                 NavigationStack {
-                    QRScanner { code in model.code = code; scanner = false; model.connect() }
+                    QRScanner { code in model.code = code; picker = nil; model.connect() }
                         .navigationTitle("QR на компьютере")
-                        .toolbar { Button("Закрыть") { scanner = false } }
+                        .toolbar { Button("Закрыть") { picker = nil } }
+                }
+                case .photos:
+                    OriginalPicker { ids in pendingAssets = ids; picker = nil }
+                case .files:
+                    DocumentPicker { urls in pendingFiles = urls; picker = nil }
                 }
             }
-            .sheet(isPresented:$photos) { OriginalPicker { ids in photos = false; model.sendAssets(ids) } }
-            .sheet(isPresented:$files) { DocumentPicker { urls in files = false; model.sendFiles(urls) } }
         }
     }
 }

@@ -19,6 +19,7 @@ import UniformTypeIdentifiers
     @Published var total: Int64 = 0 { didSet { updateLive() } }
     @Published var received: [URL] = []
     @Published var allowCloud = false
+    @Published var selectedFileNames:[String] = []
     private var transport: Transport?
     private var invitation: Invitation?
     private var sessionToken: String?
@@ -31,16 +32,31 @@ import UniformTypeIdentifiers
     private var budget: UIBackgroundTaskIdentifier = .invalid
     private var retry:Task<Void,Never>?
     private var retryDelay:UInt64 = 3
+    private let makeTransport:(Invitation)->Transport
+    private let savePairing:(SavedPairing)throws->Void
+    private lazy var discovery = PeerDiscovery { [weak self] host,fingerprint in self?.discovered(host:host,fingerprint:fingerprint) }
     let documents = FileManager.default.urls(for:.documentDirectory,in:.userDomainMask)[0]
-    init() {
+    init(savedPairing:SavedPairing? = PairingStore.load(), makeTransport:@escaping (Invitation)->Transport = { Transport($0) }, savePairing:@escaping (SavedPairing)throws->Void = PairingStore.save) {
+        self.makeTransport = makeTransport; self.savePairing = savePairing
         refresh()
-        if let saved = PairingStore.load() {
+        if let saved = savedPairing {
             invitation = saved.invitation; sessionToken = saved.token; computer = saved.computer
             code = String(data:(try? JSONEncoder().encode(saved.invitation)) ?? Data(),encoding:.utf8) ?? ""
             status = "Сохранён компьютер \(computer). Автоматическое подключение…"
         }
     }
-    func autoConnect() { if sessionToken != nil, !background { connect() } }
+    func autoConnect() { if sessionToken != nil, !background { discovery.start(); connect() } }
+    private func discovered(host:String,fingerprint:String) {
+        guard let old = invitation, let token = sessionToken, old.fingerprint == fingerprint, !background else { return }
+        if old.host != host, !busy {
+            let updated = Invitation(v:old.v,host:host,port:old.port,fingerprint:old.fingerprint,token:old.token)
+            pause("Найден сохранённый компьютер. Переподключение…")
+            invitation = updated
+            code = String(data:(try? JSONEncoder().encode(updated)) ?? Data(),encoding:.utf8) ?? ""
+            try? savePairing(SavedPairing(invitation:updated,token:token,computer:computer))
+        }
+        if transport == nil, operation == nil { connect() }
+    }
     private func scheduleReconnect() {
         guard sessionToken != nil, !background, retry == nil else { return }
         let delay = retryDelay; retryDelay = min(60,retryDelay*2)
@@ -54,6 +70,7 @@ import UniformTypeIdentifiers
     private func endBudget() { if budget != .invalid { UIApplication.shared.endBackgroundTask(budget); budget = .invalid } }
     func sceneChanged(_ phase: ScenePhase) {
         if phase == .background {
+            discovery.stop()
             background = true; UIApplication.shared.isIdleTimerDisabled = false
             if !busy { pause("В фоне ожидание остановлено. Откройте приложение и нажмите «Подключить».") }
             else if budget == .invalid { pause("iOS не разрешила продолжить передачу в фоне. Подключитесь снова в приложении.") }
@@ -75,13 +92,13 @@ import UniformTypeIdentifiers
                 let parsed = try JSONDecoder().decode(Invitation.self, from:Data(code.utf8)); try parsed.validate()
                 if let old = invitation, old.fingerprint != parsed.fingerprint { sessionToken = nil }
                 invitation = parsed
-                let t = Transport(parsed); configure(t); transport?.close(); transport = t
+                let t = makeTransport(parsed); configure(t); transport?.close(); transport = t
                 status = "Проверка связи с \(parsed.host)…"
                 try await t.probe()
                 try Task.checkCancellation()
                 status = sessionToken == nil ? "Компьютер доступен. Дождитесь запроса в окне Windows и нажмите «Разрешить» под QR-кодом (60 секунд)." : "Подключение…"
                 if let token = sessionToken { t.token = token } else { computer = try await t.pair(); sessionToken = t.token }
-                if let token = sessionToken { try PairingStore.save(SavedPairing(invitation:parsed,token:token,computer:computer)) }
+                if let token = sessionToken { try savePairing(SavedPairing(invitation:parsed,token:token,computer:computer)) }
                 try Task.checkCancellation(); guard current == generation else { return }
                 retryDelay = 3
                 status = "Подключено к \(computer.isEmpty ? "Windows" : computer)"; listen(t)
@@ -122,7 +139,7 @@ import UniformTypeIdentifiers
         retry?.cancel(); retry = nil
         transport?.close(); transport = nil; status = reason; busy = false
     }
-    func forget() { pause("Отключено. Перед новым сопряжением нажмите «Забыть устройство» в Windows."); sessionToken = nil; invitation = nil; computer = ""; PairingStore.clear() }
+    func forget() { pause("Отключено. Перед новым сопряжением нажмите «Забыть устройство» в Windows."); sessionToken = nil; invitation = nil; computer = ""; discovery.stop(); PairingStore.clear() }
     func cancel() { pause("Передача отменена. Незавершённые файлы не сохранены. Для продолжения нажмите «Подключить».") }
     func sendText() {
         let value = text
@@ -130,7 +147,8 @@ import UniformTypeIdentifiers
         perform { t in _ = try await t.json("text", object:["text":value]) }
     }
     func sendFiles(_ urls: [URL]) {
-        guard !urls.isEmpty else { return }
+        guard !urls.isEmpty else { status = "Файлы не выбраны"; return }
+        selectedFileNames = urls.map(\.lastPathComponent)
         status = "Выбрано файлов: \(urls.count). Подготовка…"
         perform { t in
             for (index,url) in urls.enumerated() {
@@ -173,15 +191,15 @@ import UniformTypeIdentifiers
         }
     }
     private func perform(_ work: @escaping (Transport) async throws -> Void) {
-        guard operation == nil, let t = transport, sessionToken != nil else { status = "Сначала подключите компьютер"; return }
-        let receiver = listener; receiver?.cancel(); listener = nil
-        let current = generation
+        guard operation == nil else { status = "Другая операция ещё выполняется. Дождитесь её завершения или отмените."; return }
+        guard let invitation, let token = sessionToken else { status = "Файлы выбраны. Сначала подключите компьютер и повторите отправку."; return }
+        // An idle long-poll must never block a user-initiated upload. Replacing the
+        // session cancels the old receive request without awaiting its completion.
+        listener?.cancel(); listener = nil; transport?.close()
+        generation = UUID(); let current = generation
+        let t = makeTransport(invitation); t.token = token; configure(t); transport = t
         operation = Task {
-            // Wait for any receive to relinquish the server's single transfer slot.
             status = "Подготовка отправки…"; done = 0; total = 0; busy = true
-            await receiver?.value
-            guard current == generation else { return }
-            done = 0; total = 0; busy = true
             do { try await work(t); try Task.checkCancellation(); status = "Отправлено" }
             catch { if current == generation { status = "Отправка остановлена: \(error.localizedDescription)" } }
             if current == generation { busy = false; operation = nil; if background { pause(status + ". Откройте приложение для продолжения.") } else { listen(t) } }

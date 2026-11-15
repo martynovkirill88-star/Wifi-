@@ -23,11 +23,12 @@ enum TransferError: LocalizedError {
 }
 final class Transport: NSObject, URLSessionDelegate, URLSessionTaskDelegate, URLSessionDownloadDelegate {
     let invitation: Invitation
+    private let configuration: URLSessionConfiguration?
     var token: String?
     var progress: ((Int64, Int64) -> Void)?
     private var lastProgress = Date.distantPast
     lazy var session: URLSession = {
-        let c = URLSessionConfiguration.ephemeral
+        let c = configuration ?? URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 70
         c.timeoutIntervalForResource = 24 * 3600
         c.httpMaximumConnectionsPerHost = 3
@@ -35,7 +36,7 @@ final class Transport: NSObject, URLSessionDelegate, URLSessionTaskDelegate, URL
         c.httpCookieStorage = nil
         return URLSession(configuration: c, delegate: self, delegateQueue: nil)
     }()
-    init(_ invitation: Invitation) { self.invitation = invitation }
+    init(_ invitation: Invitation, configuration:URLSessionConfiguration? = nil) { self.invitation = invitation; self.configuration = configuration }
     func close() { session.invalidateAndCancel() }
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
