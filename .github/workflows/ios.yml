@@ -34,6 +34,10 @@ jobs:
           test -f "$APP/LocalDropIcon60@3x.png"
           ICON=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles:0' "$APP/Info.plist")
           test "$ICON" = LocalDropIcon60
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
+          BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
+          test "$VERSION" = 0.2.2
+          test "$BUILD" = 4
       - name: Package unsigned IPA
         run: |
           mkdir -p build/package/Payload
