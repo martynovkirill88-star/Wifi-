@@ -7,7 +7,7 @@ final class DocumentPickerUITests:XCTestCase {
         app.launchArguments = ["--file-picker-ui-test"]
         app.launch()
         app.buttons["choose-file"].tap()
-        let file = app.staticTexts["LocalDrop-picker-fixture.txt"].firstMatch
+        let file = app.cells.matching(NSPredicate(format:"identifier BEGINSWITH %@","LocalDrop-picker-fixture")).firstMatch
         XCTAssertTrue(file.waitForExistence(timeout:30),app.debugDescription)
         file.tap()
         let open = app.buttons["Open"].firstMatch

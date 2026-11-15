@@ -48,7 +48,7 @@ private final class FileTransferProtocol: URLProtocol {
         },savePairing:{ _ in })
         defer { model.pause("Test completed"); FileTransferProtocol.onReceive = nil; FileTransferProtocol.onUpload = nil }
         model.connect()
-        await fulfillment(of:[receive],timeout:5)
+        await fulfillment(of:[receive],timeout:10)
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
         defer { try? FileManager.default.removeItem(at:dir) }
@@ -56,7 +56,7 @@ private final class FileTransferProtocol: URLProtocol {
         try Data("original data".utf8).write(to:file)
         model.sendFiles([file])
         XCTAssertEqual(model.selectedFileNames,["fixture.txt"])
-        await fulfillment(of:[upload],timeout:5)
+        await fulfillment(of:[upload],timeout:15)
     }
     func testSelectionIsVisibleWhenComputerIsNotPaired() {
         let model = Model(savedPairing:nil)

@@ -49,6 +49,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: local.localdrop.app
         MARKETING_VERSION: '0.2.2'
         CURRENT_PROJECT_VERSION: '4'
+        ASSETCATALOG_COMPILER_APPICON_NAME: ''
   LocalDropActivity:
     type: app-extension
     platform: iOS
