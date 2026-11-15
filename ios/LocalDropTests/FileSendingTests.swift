@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 import Combine
 @testable import LocalDrop
 
@@ -21,6 +22,14 @@ private final class FileTransferProtocol: URLProtocol {
 }
 
 @MainActor final class FileSendingTests: XCTestCase {
+    func testHomeScreenIconFilesArePresentAndDeclared() {
+        let icons = Bundle.main.infoDictionary?["CFBundleIcons"] as? [String:Any]
+        let primary = icons?["CFBundlePrimaryIcon"] as? [String:Any]
+        let files = primary?["CFBundleIconFiles"] as? [String]
+        XCTAssertEqual(files?.first,"LocalDropIcon60")
+        XCTAssertNotNil(UIImage(named:"LocalDropIcon60"))
+        XCTAssertNotNil(Bundle.main.url(forResource:"LocalDropIcon60@3x",withExtension:"png"))
+    }
     func testConfirmedFileStartsUploadWhileReceiveIsIdle() async throws {
         let receive = expectation(description:"Long-poll is waiting")
         let upload = expectation(description:"Selected file starts uploading")

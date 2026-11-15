@@ -2,11 +2,16 @@ use std::{env, path::PathBuf, process::Command};
 
 fn main() {
     println!("cargo:rerun-if-changed=app.manifest");
+    println!("cargo:rerun-if-changed=app.ico");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("app.manifest");
     if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        winresource::WindowsResource::new()
+            .set_icon("app.ico")
+            .compile()
+            .expect("Failed to embed application icon");
         println!("cargo:rustc-link-arg-bin=localdrop=/MANIFEST:EMBED");
         println!(
             "cargo:rustc-link-arg-bin=localdrop=/MANIFESTINPUT:{}",
@@ -19,8 +24,13 @@ fn main() {
         std::fs::write(
             &rc,
             format!(
-                "1 24 \"{}\"\n",
-                manifest.display().to_string().replace('\\', "/")
+                "1 24 \"{}\"\n1 ICON \"{}\"\n",
+                manifest.display().to_string().replace('\\', "/"),
+                manifest
+                    .with_file_name("app.ico")
+                    .display()
+                    .to_string()
+                    .replace('\\', "/")
             ),
         )
         .unwrap();

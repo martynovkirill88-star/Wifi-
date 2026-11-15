@@ -265,7 +265,11 @@ pub fn run() -> anyhow::Result<()> {
         .build(&mut w.history)?;
     w.tabs.set_selected_tab(1);
     w.island = super::island::Island::build(&w.window)?;
-    w.icon = nwg::Icon::from_system(nwg::OemIcon::Information);
+    nwg::Icon::builder()
+        .source_bin(Some(include_bytes!("../app.ico")))
+        .size(Some((32, 32)))
+        .build(&mut w.icon)?;
+    w.window.set_icon(Some(&w.icon));
     nwg::TrayNotification::builder()
         .parent(&w.window)
         .icon(Some(&w.icon))

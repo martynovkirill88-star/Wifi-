@@ -147,19 +147,22 @@ import UniformTypeIdentifiers
         perform { t in _ = try await t.json("text", object:["text":value]) }
     }
     func sendFiles(_ urls: [URL]) {
-        guard !urls.isEmpty else { status = "Файлы не выбраны"; return }
-        selectedFileNames = urls.map(\.lastPathComponent)
-        status = "Выбрано файлов: \(urls.count). Подготовка…"
-        perform { t in
-            for (index,url) in urls.enumerated() {
+        sendSelectedFiles(urls.map(SelectedFile.init))
+    }
+    func sendSelectedFiles(_ files:[SelectedFile]) {
+        guard !files.isEmpty else { status = "Файлы не выбраны"; return }
+        selectedFileNames = files.map { $0.url.lastPathComponent }
+        status = "Выбрано файлов: \(files.count). Подготовка…"
+        perform { [files] t in
+            for (index,file) in files.enumerated() {
+                let url = file.url
                 try Task.checkCancellation()
-                await MainActor.run { self.status = "Подготовка файла \(index+1)/\(urls.count): \(url.lastPathComponent)" }
-                let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
+                await MainActor.run { self.status = "Подготовка файла \(index+1)/\(files.count): \(url.lastPathComponent)" }
                 // Coordinate reads with iCloud Drive / third-party document providers.
                 let staged = try await stageDocument(url)
                 defer { try? FileManager.default.removeItem(at:staged.deletingLastPathComponent()) }
                 await MainActor.run { self.status = "Отправка: \(url.lastPathComponent)"; self.done = 0; self.total = 0 }
-                try await t.upload(staged,index:index+1,count:urls.count)
+                try await t.upload(staged,index:index+1,count:files.count)
             }
         }
     }

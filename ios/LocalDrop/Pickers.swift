@@ -4,19 +4,46 @@ import AVFoundation
 import UniformTypeIdentifiers
 
 struct DocumentPicker: UIViewControllerRepresentable {
-    let selected: ([URL]) -> Void
-    func makeCoordinator() -> Coordinator { Coordinator(selected) }
-    func makeUIViewController(context:Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes:[.data],asCopy:true)
-        picker.allowsMultipleSelection = true; picker.delegate = context.coordinator
-        return picker
+    var initialDirectory:URL? = nil
+    let selected: ([SelectedFile]) -> Void
+    func makeUIViewController(context:Context) -> DocumentPickerHost { DocumentPickerHost(initialDirectory:initialDirectory,selected:selected) }
+    func updateUIViewController(_ controller:DocumentPickerHost,context:Context) {}
+}
+final class SelectedFile {
+    let url:URL
+    private let scoped:Bool
+    init(_ url:URL) { self.url = url; scoped = url.startAccessingSecurityScopedResource() }
+    deinit { if scoped { url.stopAccessingSecurityScopedResource() } }
+}
+final class DocumentPickerHost: UIViewController, UIDocumentPickerDelegate {
+    private let selected:([SelectedFile])->Void
+    private let initialDirectory:URL?
+    private var presented = false
+    private var finished = false
+    init(initialDirectory:URL?,selected:@escaping ([SelectedFile])->Void) { self.initialDirectory = initialDirectory; self.selected = selected; super.init(nibName:nil,bundle:nil) }
+    required init?(coder:NSCoder) { fatalError("init(coder:) is unsupported") }
+    override func viewDidAppear(_ animated:Bool) {
+        super.viewDidAppear(animated)
+        guard !presented else { return }; presented = true
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes:[.data],asCopy:false)
+        picker.allowsMultipleSelection = true
+        picker.shouldShowFileExtensions = true
+        picker.directoryURL = initialDirectory
+        picker.delegate = self
+        picker.modalPresentationStyle = .fullScreen
+        present(picker,animated:true)
     }
-    func updateUIViewController(_ controller:UIDocumentPickerViewController,context:Context) {}
-    final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let selected: ([URL]) -> Void
-        init(_ selected:@escaping ([URL])->Void) { self.selected = selected }
-        func documentPicker(_ controller:UIDocumentPickerViewController,didPickDocumentsAt urls:[URL]) { selected(urls) }
-        func documentPickerWasCancelled(_ controller:UIDocumentPickerViewController) { selected([]) }
+    func documentPicker(_ controller:UIDocumentPickerViewController,didPickDocumentsAt urls:[URL]) { complete(controller,urls:urls) }
+    func documentPicker(_ controller:UIDocumentPickerViewController,didPickDocumentAt url:URL) { complete(controller,urls:[url]) }
+    func documentPickerWasCancelled(_ controller:UIDocumentPickerViewController) { complete(controller,urls:[]) }
+    private func complete(_ controller:UIDocumentPickerViewController,urls:[URL]) {
+        guard !finished else { return }; finished = true
+        // Keep access alive before dismissing the system provider. The lease is
+        // retained through the SwiftUI dismissal and the entire staging task.
+        let files = urls.map(SelectedFile.init)
+        if controller.presentingViewController != nil {
+            controller.dismiss(animated:true) { self.selected(files) }
+        } else { selected(files) }
     }
 }
 

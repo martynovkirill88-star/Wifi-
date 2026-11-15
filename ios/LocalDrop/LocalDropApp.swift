@@ -6,17 +6,25 @@ import Photos
     @Environment(\.scenePhase) private var phase
     var body: some Scene {
         WindowGroup {
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--file-picker-ui-test") { PickerTestScreen() }
+            else { appContent }
+            #else
+            appContent
+            #endif
+        }
+    }
+    private var appContent:some View {
             ContentView(model:model)
                 .onAppear { model.autoConnect() }
                 .onChange(of:phase) { p in model.sceneChanged(p) }
-        }
     }
 }
 struct ContentView: View {
     private enum Picker: String, Identifiable { case scanner,photos,files; var id:String { rawValue } }
     @ObservedObject var model: Model
     @State private var picker:Picker?
-    @State private var pendingFiles:[URL] = []
+    @State private var pendingFiles:[SelectedFile] = []
     @State private var pendingAssets:[String] = []
     var body: some View {
         NavigationStack {
@@ -82,11 +90,11 @@ struct ContentView: View {
                     }
                 }
                 Section {
-                    Text("LocalDrop \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "") · сборка \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "")").font(.caption).foregroundStyle(.secondary)
+                    Text("LocalDrop · F4 · \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "") (\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""))").font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("build-marker-F4")
                 }
             }.navigationTitle("LocalDrop")
             .sheet(item:$picker,onDismiss: {
-                if !pendingFiles.isEmpty { let urls = pendingFiles; pendingFiles = []; model.sendFiles(urls) }
+                if !pendingFiles.isEmpty { let files = pendingFiles; pendingFiles = []; model.sendSelectedFiles(files) }
                 else if !pendingAssets.isEmpty { let ids = pendingAssets; pendingAssets = []; model.sendAssets(ids) }
             }) { selected in
                 switch selected {

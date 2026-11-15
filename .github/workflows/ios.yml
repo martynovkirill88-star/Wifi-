@@ -27,16 +27,23 @@ jobs:
             -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
             -derivedDataPath build/SimulatorTests -resultBundlePath build/FileSendingTests.xcresult \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=''
+      - name: Verify explicit iPhone icon resources
+        run: |
+          APP=build/DerivedData/Build/Products/Release-iphoneos/LocalDrop.app
+          test -f "$APP/LocalDropIcon60@2x.png"
+          test -f "$APP/LocalDropIcon60@3x.png"
+          ICON=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles:0' "$APP/Info.plist")
+          test "$ICON" = LocalDropIcon60
       - name: Package unsigned IPA
         run: |
           mkdir -p build/package/Payload
           cp -R build/DerivedData/Build/Products/Release-iphoneos/LocalDrop.app build/package/Payload/
           cd build/package
-          /usr/bin/zip -qry ../LocalDrop-unsigned.ipa Payload
-          unzip -t ../LocalDrop-unsigned.ipa
+          /usr/bin/zip -qry ../LocalDrop-F4-unsigned.ipa Payload
+          unzip -t ../LocalDrop-F4-unsigned.ipa
       - uses: actions/upload-artifact@v4
         with:
-          name: LocalDrop-iOS-unsigned
-          path: build/LocalDrop-unsigned.ipa
+          name: LocalDrop-iOS-F4-unsigned
+          path: build/LocalDrop-F4-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
